@@ -1,0 +1,58 @@
+---
+title: "Series temporais Projeto"
+output: html_notebook
+---
+Necessary packages
+```{r}
+#install.packages("readxl")
+#install.packages("lubridate")
+
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(forecast)
+```
+
+## Data loading and preparation
+
+```{r}
+dados <- read.csv("leite.csv")
+dados
+```
+
+Seleção das colunas relevantes
+
+```{r}
+dadosSelected <- select(dados, TIME_PERIOD, OBS_VALUE)
+dadosSelected <- dadosSelected[-c(1,2, 3), ] #eliminação de meses vazios no inicio
+head(dadosSelected)
+```
+
+```{r}
+ts_data <- ts(dadosSelected$OBS_VALUE, start = c(1987, 1), frequency = 12)
+
+```
+
+## Exploratory Analysis
+
+```{r}
+dadosSelected$OBS_VALUE <- as.numeric(gsub(",", ".", dadosSelected$OBS_VALUE))
+boxplot(dadosSelected$OBS_VALUE, main = "Boxplot of milk production in Portugal", col = "lightblue")
+
+```
+
+No presence of outliers
+
+```{r}
+autoplot(ts_data,
+         ylab = "Thousand tonnes",
+         xlab = "Year",
+         main = "Monthly drinking milk production in Portugal (1987-2026)")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
