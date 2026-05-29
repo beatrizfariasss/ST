@@ -1,57 +1,85 @@
 ---
-title: "Series temporais Projeto"
+title: "Time Series Analysis of Monthly Drinking Milk Production in Portugal"
 output: html_notebook
 ---
+
+## 1. Introduction
+
+*(to be written)*
+
+---
+
+## 2. Data and Exploratory Analysis
+
+### 2.1 Packages
+
 Necessary packages
-```{r}
-#install.packages("readxl")
-#install.packages("lubridate")
+```{r message=FALSE, warning=FALSE}
+#install.packages(c("readxl","lubridate","dplyr","ggplot2","forecast","tseries","urca","lmtest","MuMIn","kableExtra"))
 
 library(readxl)
 library(dplyr)
 library(lubridate)
 library(ggplot2)
 library(forecast)
+library(tseries)
+library(urca)
+library(lmtest)
+library(MuMIn)
+library(kableExtra)
 ```
 
-## Data loading and preparation
+### 2.2 Data Loading and Preparation
 
 ```{r}
-dados <- read.csv("leite.csv")
+dados <- read.csv("data/leite.csv")
 dados
 ```
 
-Seleção das colunas relevantes
+Select the relevant columns and remove the three empty rows at the start (1986, no data reported).
 
 ```{r}
 dadosSelected <- select(dados, TIME_PERIOD, OBS_VALUE)
-dadosSelected <- dadosSelected[-c(1,2, 3), ] #eliminação de meses vazios no inicio
+dadosSelected <- dadosSelected[-c(1,2, 3), ]
+
+# Ensure numeric values (handles any locale comma decimals)
+dadosSelected$OBS_VALUE <- as.numeric(gsub(",", ".", dadosSelected$OBS_VALUE))
+
 head(dadosSelected)
 ```
 
+The dataset contains **`r nrow(dadosSelected)` monthly observations** of drinking milk production in Portugal (thousand tonnes), from January 1987 to February 2026, sourced from Eurostat (APRO_MK_COLM).
+
 ```{r}
 ts_data <- ts(dadosSelected$OBS_VALUE, start = c(1987, 1), frequency = 12)
-
 ```
 
-## Exploratory Analysis
+### 2.3 Outlier Analysis
 
 ```{r}
-dadosSelected$OBS_VALUE <- as.numeric(gsub(",", ".", dadosSelected$OBS_VALUE))
-boxplot(dadosSelected$OBS_VALUE, main = "Boxplot of milk production in Portugal", col = "lightblue")
-
+boxplot(dadosSelected$OBS_VALUE, main = "Boxplot of Drinking Milk Production in Portugal", ylab = "Thousand tonnes", col = "lightblue")
 ```
 
-No presence of outliers
+The boxplot shows no outliers. All observations fall within the expected range.
+
+### 2.4 Time Series Visualisation
 
 ```{r}
 autoplot(ts_data,
          ylab = "Thousand tonnes",
          xlab = "Year",
-         main = "Monthly drinking milk production in Portugal (1987-2026)")
+         main = "Monthly Drinking Milk Production in Portugal (1987-2026)")
 ```
+From the plot we can observe:
 
-Transformation to the month lenght 
+1. **Seasonality:** there is a clear repeating pattern every 12 months, visible throughout the whole series.
+2. **Trend**: production increases from 1987 until around 2005–2007, reaching a peak of about 90 thousand tonnes, and then steadily decreases to around 40–60 thousand tonnes by 2026.                          
+3. **Variance**: the seasonal swings appear larger in the middle of the series (around 2000–2010) than at the beginning and end, which suggests the variance may not be constant. This will be checked formally using a Box–Cox test. 
+
+### 2.5 Transformation to the month lenght 
+
+Months have different lengths (28–31 days), which introduces a spurious seasonal effect. We standardise production to an equivalent month of 30.44 days (365.25/12).
+
 ```{r}
 dados_ajustados <- dadosSelected %>%
   # 1. Garante que o TIME_PERIOD seja lido como data (adicionando o dia 01)
@@ -61,21 +89,205 @@ dados_ajustados <- dadosSelected %>%
   # 3. Faz o ajuste: valor original dividido pelo número de dias
   mutate(Valor_Por_Dia = (OBS_VALUE* (365.25/12))/ Dias_no_Mes)
 ```
+
 ```{r}
 # Criamos a série usando a nova coluna 'Valor_Por_Dia'
-ts_data_ajustada <- ts(dados_ajustados$Valor_Por_Dia, start = c(1987, 1), frequency = 12)
+ts_adj<- ts(dados_ajustados$Valor_Por_Dia, start = c(1987, 1), frequency = 12)
 ```
+
 ```{r}
 # Desenha o gráfico comparativo
-autoplot(ts_data, series = "Original (Bruto)") +
-  autolayer(ts_data_ajustada , series = "Ajustado (Padronizado para 30.4 dias)") +
+autoplot(ts_data, series = "Original") +
+  autolayer(ts_adj , series = "Calendar-adjusted") +
   labs(
-    x = "Tempo", 
-    y = "Valores", 
-    title = "Efeito do Ajuste pelo Tamanho do Mês"
+    x = "Year", 
+    y = "Thousand tonnes", 
+    title = "Effect of Calendar Adjustment"
   ) +
+  guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
 ```
+
+The calendar-adjusted series removes the artefact caused by month length differences. **We will use `ts_adj` for all subsequent analysis.**
+
+### 2.6 Data Split: Training and Test Sets
+
+Following standard practice, we split the data into a training set (80%) for model fitting and a test set (20%) for forecast evaluation.
+
+```{r}
+n          <- length(ts_adj)
+train_size <- floor(0.8 * n)
+
+ts_train <- window(ts_adj, end   = time(ts_adj)[train_size])
+ts_test  <- window(ts_adj, start = time(ts_adj)[train_size + 1])
+
+cat("Training set:", length(ts_train), "observations\n")
+cat("Test set:    ", length(ts_test),  "observations\n")
+```
+
+All transformations and model fitting are applied **only to the training set** to avoid data leakage.
+
+### 2.7 Decomposition
+
+
+```{r}
+decomposed <- decompose(ts_train)
+autoplot(decomposed) +
+  labs(title = "Classical Decomposition of the Calendar-Adjusted Series")
+```
+
+The decomposition confirms:
+
+- A clear **seasonal component** with period 12 and constant amplitude throughout the series, which supports the use of an additive decomposition.
+- A **trend component** that rises steadily from 1987 to a peak around 2005–2007 (~80 thousand tonnes), then declines consistently through to the end of the training set.
+- A **remainder** that fluctuates around zero with no obvious pattern, suggesting it is roughly stationary. There is a notable spike around 1989–1990, but no systematic structure is visible.
+
+### 2.8 Variance Stabilisation
+
+We use the Box–Cox procedure to check whether a variance-stabilising transformation is needed. A lambda close to 0 suggests a log transformation; a lambda close to 1 means no transformation is necessary.
+
+```{r}
+lambda <- BoxCox.lambda(ts_train)
+cat("Optimal Box-Cox lambda:", round(lambda, 3), "\n")
+```
+
+```{r}
+if (abs(lambda) < 0.25) {
+  cat("Lambda close to 0 -> log transformation recommended.\n")
+  ts_train_t <- log(ts_train)
+  ts_test_t  <- log(ts_test)
+  transformed <- TRUE
+} else if (lambda > 0.75 & lambda < 1.25) {
+  cat("Lambda close to 1 -> no transformation needed.\n")
+  ts_train_t <- ts_train
+  ts_test_t  <- ts_test
+  transformed <- FALSE
+} else {
+  cat("Applying Box-Cox transformation with lambda =", round(lambda, 3), "\n")
+  ts_train_t <- BoxCox(ts_train, lambda)
+  ts_test_t  <- BoxCox(ts_test,  lambda)
+  transformed <- TRUE
+}
+
+autoplot(ts_train_t,
+         main = "Training Series (after transformation, if applied)",
+         ylab = "Value", xlab = "Year")
+```
+
+### 2.9 Stationarity Assessment
+
+We use two complementary tests:
+
+- **ADF** (Augmented Dickey–Fuller): H₀ = series has a unit root (non-stationary).
+- **KPSS**: H₀ = series is stationary.
+
+```{r}
+adf.test(ts_train_t)
+kpss.test(ts_train_t)
+```
+
+```{r}
+cat("Recommended regular differences (ndiffs):  ", ndiffs(ts_train_t),  "\n")
+cat("Recommended seasonal differences (nsdiffs):", nsdiffs(ts_train_t), "\n")
+```
+
+Both tests agree that the series is non-stationary:
+
+- **ADF** (p-value = 0.385): fails to reject H₀, indicating the presence of a unit root.
+- **KPSS** (p-value < 0.01): rejects H₀, confirming non-stationarity.
+
+The functions `ndiffs()` and `nsdiffs()` recommend **d = 1** regular difference and **D = 1** seasonal difference to achieve stationarity.
+
+### 2.10 Achieving Stationarity through Differencing
+
+We first apply a seasonal difference (lag = 12) to remove the seasonal pattern, then a regular first difference to remove the trend.
+
+```{r}
+d  <- ndiffs(ts_train_t)
+D  <- nsdiffs(ts_train_t)
+
+ts_stationary <- ts_train_t
+
+if (D > 0) {
+  ts_stationary <- diff(ts_stationary, lag = 12, differences = D)
+}
+if (d > 0) {
+  ts_stationary <- diff(ts_stationary, differences = d)
+}
+
+autoplot(ts_stationary,
+         main = paste0("Stationary Series (d=", d, ", D=", D, ")"),
+         ylab = "Value", xlab = "Year")
+```
+
+We re-run the stationarity tests to confirm.
+
+```{r}
+adf.test(ts_stationary)
+kpss.test(ts_stationary)
+```
+
+After applying one seasonal difference (D=1, lag=12) and one regular difference (d=1), both tests confirm that the series is now stationary:
+
+- **ADF** (p-value < 0.01): rejects H₀, confirming stationarity.
+- **KPSS** (p-value > 0.1): fails to reject H₀, confirming stationarity.
+
+The plot shows the series fluctuating around zero with no visible trend or seasonality. Some larger spikes are visible in the early years (1988–1993), but no systematic pattern remains.
+
+### 2.11 ACF and PACF Analysis
+
+The ACF and PACF of the stationary series are used to identify candidate SARIMA orders.
+
+```{r}
+tsdisplay(ts_stationary,
+          main = paste0("ACF / PACF of Stationary Series (d=", d, ", D=", D, ")"),
+          lag.max = 48)
+```
+
+For a seasonal series with s = 12, the relevant lags to examine are **lag 1** (non-seasonal structure) and **lags 12 and 24** (seasonal structure).
+
+- **Lag 1**: both the ACF and PACF show a single significant negative spike at lag 1, with lags 2–10 falling within the confidence bands. This is consistent with a non-seasonal **MA(1)** component (q = 1).
+- **Lag 12**: both the ACF and PACF show a significant negative spike at lag 12, indicating a seasonal **MA(1)** component (Q = 1).
+- **Lag 24**: no significant spikes in either ACF or PACF, confirming that one seasonal MA term is sufficient (P = 0).
+
+The pattern — one spike at lag 1 and one spike at lag 12, with nothing beyond — directly suggests the **airline model**:
+
+- **SARIMA(0,1,1)(0,1,1)[12]**
+
+`auto.arima()` will also be used in Section 3 to confirm or refine this choice.
+
+---
+## 3. Model Proposals
+
+All models are fitted on the log-transformed training set (`ts_train_t`). The transformation will be reversed when forecasting in Section 4.
+
+### 3.1 Auto ARIMA
+
+We first use `auto.arima()` to search broadly over SARIMA orders and find the best model according to AICc. This serves as a reference to compare against the manually identified model.
+
+```{r}
+auto_fit <- auto.arima(ts_train_t, stepwise = FALSE, approximation = FALSE)
+summary(auto_fit)
+```
+
+The selected model is **SARIMA(1,1,1)(0,1,1)[12]**. This is consistent with the ACF/PACF analysis — the presence of spikes at lag 1 in both plots suggested a mixed ARMA(1,1) non-seasonal structure rather than a pure MA(1). All three coefficients are estimated with low standard errors, suggesting they are well-determined by the data. The training MAPE of 0.92% indicates an excellent in-sample fit.
+
+#### Parameter significance
+
+```{r}
+coeftest(auto_fit)
+```
+
+#### Residual diagnostics
+
+```{r}
+checkresiduals(auto_fit)
+```
+All three parameters are highly significant (p < 0.001). The residual plot shows values fluctuating around zero with no obvious trend or seasonality. The histogram is approximately bell-shaped, consistent with normality. However, the **Ljung-Box test** returns a p-value of **0.03**, which is below the 0.05 threshold, meaning we reject the null hypothesis of no autocorrelation. There are a few borderline spikes in the ACF of the residuals around lag 12–15, indicating some small remaining structure that the model has not fully captured. This result motivates testing alternative models. 
+
+---
+
+### 3.2 Manual SARIMA — SARIMA(0,1,1)(0,1,1)[12]
 
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
