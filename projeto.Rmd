@@ -283,11 +283,138 @@ coeftest(auto_fit)
 ```{r}
 checkresiduals(auto_fit)
 ```
-All three parameters are highly significant (p < 0.001). The residual plot shows values fluctuating around zero with no obvious trend or seasonality. The histogram is approximately bell-shaped, consistent with normality. However, the **Ljung-Box test** returns a p-value of **0.03**, which is below the 0.05 threshold, meaning we reject the null hypothesis of no autocorrelation. There are a few borderline spikes in the ACF of the residuals around lag 12–15, indicating some small remaining structure that the model has not fully captured. This result motivates testing alternative models. 
+All three parameters are highly significant (p < 0.001). The residual plot shows values fluctuating around zero with no obvious trend or seasonality. The histogram is approximately bell-shaped, consistent with normality. However, the **Ljung-Box test** returns a p-value of **0.03**, which is below the 0.05 threshold, meaning we reject the null hypothesis of no autocorrelation. Two borderline spikes are present but do not follow a systematic seasonal pattern, suggesting any remaining autocorrelation is weak. This result motivates testing alternative models. 
 
 ---
 
 ### 3.2 Manual SARIMA — SARIMA(0,1,1)(0,1,1)[12]
+
+Based on the ACF/PACF analysis in Section 2, the pattern of a single significant negative spike at lag 1 and at lag 12 suggesting SARIMA(0,1,1)(0,1,1)[12].
+
+```{r}
+manual_fit <- Arima(ts_train_t,
+                    order    = c(0, 1, 1),
+                    seasonal = list(order = c(0, 1, 1), period = 12))
+summary(manual_fit)
+```
+#### Parameter significance
+
+```{r}
+coeftest(manual_fit)
+```
+
+#### Residual diagnostics
+
+```{r}
+checkresiduals(manual_fit)
+```
+Both coefficients are highly significant (p < 2.2e-16). The residuals fluctuate around zero with no visible trend or seasonal pattern. However, the **Ljung-Box test** returns a significant p-value (p < 0.05), indicating residual autocorrelation, which means that the model leaves some structure unexplained. The ACF of the residuals shows six spikes exceeding the confidence bands, suggesting that the airline model is not fully capturing the dynamics of the series — it underfits the data, being too simple for the complexity of this series. This motivates exploring models with AR terms in the next section.
+
+---
+
+### 3.3 Candidate Models with AR Terms                                                                                                                                                                         
+To address the residual autocorrelation found in the airline model, we add non-seasonal AR terms. Three candidates are fitted and compared against SARIMA(0,1,1)(0,1,1)[12].
+
+```{r}
+fit_111_011 <- Arima(ts_train_t, order = c(1,1,1), seasonal = c(0,1,1))
+fit_211_011 <- Arima(ts_train_t, order = c(2,1,1), seasonal = c(0,1,1))
+fit_112_011 <- Arima(ts_train_t, order = c(1,1,2), seasonal = c(0,1,1))
+```
+
+#### AIC comparison
+
+```{r}
+ar_candidates <- data.frame(
+  Model = c(
+    "SARIMA(0,1,1)(0,1,1)[12]",
+    "SARIMA(1,1,1)(0,1,1)[12]",
+    "SARIMA(2,1,1)(0,1,1)[12]",
+    "SARIMA(1,1,2)(0,1,1)[12]"
+  ),
+  AIC  = round(c(AIC(manual_fit), AIC(fit_111_011), AIC(fit_211_011), AIC(fit_112_011)), 2),
+  AICc = round(c(AICc(manual_fit), AICc(fit_111_011), AICc(fit_211_011), AICc(fit_112_011)), 2),
+  BIC  = round(c(BIC(manual_fit), BIC(fit_111_011), BIC(fit_211_011), BIC(fit_112_011)), 2)
+)
+
+ar_candidates$ΔAIC <- round(ar_candidates$AIC - min(ar_candidates$AIC), 2)
+ar_candidates[order(ar_candidates$AIC), ] %>%
+  kable(row.names = FALSE, caption = "AIC Comparison — SARIMA Candidates with AR Terms") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+SARIMA(1,1,1)(0,1,1)[12] achieves the lowest AIC among all non-seasonal AR candidates — consistent with the model selected by `auto.arima()` in Section 3.1. However, the Ljung-Box test still returns p = 0.03, motivating two further adjustments in the next section.
+
+---
+
+### 3.4 Extended Seasonal Candidates
+
+We test two further adjustments targeting the remaining residual autocorrelation: adding a seasonal AR term (P=1) and adding a second seasonal MA term (Q=2).
+
+```{r}
+fit_111_111 <- Arima(ts_train_t, order = c(1,1,1), seasonal = list(order = c(1,1,1), period = 12))
+fit_111_012 <- Arima(ts_train_t, order = c(1,1,1), seasonal = list(order = c(0,1,2), period = 12))
+```
+
+#### Residual diagnostics — SARIMA(1,1,1)(1,1,1)[12]
+
+```{r}
+checkresiduals(fit_111_111)
+```
+
+#### Parameter significance — SARIMA(1,1,1)(1,1,1)[12]
+
+```{r}
+coeftest(fit_111_111)
+```
+The residuals fluctuate around zero with no visible trend or seasonal pattern, and the histogram is approximately normal. However, two spikes still exceed the confidence bands in the ACF, and the **Ljung-Box test** returns p = 0.021, meaning that the residual autocorrelation is not resolved. Furthermore, the seasonal AR term `sar1` is not statistically significant (p = 0.947), with an estimate virtually equal to zero, confirming that this parameter adds no meaningful information to the model.
+
+#### Residual diagnostics — SARIMA(1,1,1)(0,1,2)[12]
+
+```{r}
+checkresiduals(fit_111_012)
+```
+
+#### Parameter significance — SARIMA(1,1,1)(0,1,2)[12]
+
+```{r}
+coeftest(fit_111_012)
+```
+The residuals fluctuate around zero with no visible trend or seasonal pattern, and the histogram is approximately normal. Again, two spikes still exceed the confidence bands in the ACF, and the **Ljung-Box test** returns p = 0.021 which is identical to the previous candidate. The second seasonal MA term `sma2` is not statistically significant (p = 0.946), with an estimate virtually equal to zero. The additional parameter does not capture any real structure in the data.
+
+#### AIC comparison — extended candidates
+
+```{r}
+extended_candidates <- data.frame(
+  Model = c(
+    "SARIMA(0,1,1)(0,1,1)[12]",
+    "SARIMA(1,1,1)(0,1,1)[12]",
+    "SARIMA(2,1,1)(0,1,1)[12]",
+    "SARIMA(1,1,2)(0,1,1)[12]",
+    "SARIMA(1,1,1)(1,1,1)[12]",
+    "SARIMA(1,1,1)(0,1,2)[12]"
+  ),
+  AIC  = round(c(AIC(manual_fit), AIC(fit_111_011), AIC(fit_211_011), AIC(fit_112_011),
+                 AIC(fit_111_111), AIC(fit_111_012)), 2),
+  AICc = round(c(AICc(manual_fit), AICc(fit_111_011), AICc(fit_211_011), AICc(fit_112_011),
+                 AICc(fit_111_111), AICc(fit_111_012)), 2),
+  BIC  = round(c(BIC(manual_fit), BIC(fit_111_011), BIC(fit_211_011), BIC(fit_112_011),
+                 BIC(fit_111_111), BIC(fit_111_012)), 2)
+)
+
+extended_candidates$ΔAIC <- round(extended_candidates$AIC - min(extended_candidates$AIC), 2)
+extended_candidates[order(extended_candidates$AIC), ] %>%
+  kable(row.names = FALSE, caption = "AIC Comparison — All SARIMA Candidates") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+**SARIMA(1,1,1)(0,1,1)[12]** achieves the lowest AIC across all candidates (ΔAIC = 0). The additional seasonal parameters in SARIMA(1,1,1)(1,1,1)[12] and SARIMA(1,1,1)(0,1,2)[12] are not statistically significant and do not improve either the AIC or the Ljung-Box test, confirming that the extra complexity is not justified. This model is therefore selected as the final SARIMA model. 
+
+---
+
+### 3.5 ETS Model
+
+
+
 
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
