@@ -413,11 +413,227 @@ extended_candidates[order(extended_candidates$AIC), ] %>%
 
 ### 3.5 ETS Model
 
+As an alternative to SARIMA, we fit an ETS (Error–Trend–Seasonality) model using `ets()`, which automatically selects the best combination of error, trend, and seasonal components by minimising the AICc.
 
+```{r}
+ets_fit <- ets(ts_train_t)
+summary(ets_fit)
+```
 
+The model selected is **ETS(`r ets_fit$method`)**. Because the series was log-transformed before fitting, the multiplicative variance has already been stabilised, so ETS operates in the additive error framework on the transformed scale.
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+#### Residual diagnostics
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r}
+checkresiduals(ets_fit)
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+The residuals fluctuate around zero with no visible trend or seasonal structure and the histogram is approximately bell-shaped. The Ljung-Box test result should be interpreted in context: ETS(A,Ad,A) uses a damped additive trend, which — as the forecast evaluation in Section 4 reveals — ultimately fails to follow the persistent downward trend present in this series.
+
+#### AIC comparison — SARIMA vs ETS
+
+Note: AIC values from `Arima()` and `ets()` are computed on the same log-transformed training set and are therefore directly comparable for model selection purposes.
+
+```{r}
+all_candidates <- data.frame(
+  Model = c(
+    "SARIMA(0,1,1)(0,1,1)[12]",
+    "SARIMA(1,1,1)(0,1,1)[12]",
+    "SARIMA(2,1,1)(0,1,1)[12]",
+    "SARIMA(1,1,2)(0,1,1)[12]",
+    "SARIMA(1,1,1)(1,1,1)[12]",
+    "SARIMA(1,1,1)(0,1,2)[12]",
+    ets_fit$method
+  ),
+  AIC  = round(c(AIC(manual_fit), AIC(fit_111_011), AIC(fit_211_011), AIC(fit_112_011),
+                 AIC(fit_111_111), AIC(fit_111_012), AIC(ets_fit)), 2),
+  AICc = round(c(AICc(manual_fit), AICc(fit_111_011), AICc(fit_211_011), AICc(fit_112_011),
+                 AICc(fit_111_111), AICc(fit_111_012), AICc(ets_fit)), 2),
+  BIC  = round(c(BIC(manual_fit), BIC(fit_111_011), BIC(fit_211_011), BIC(fit_112_011),
+                 BIC(fit_111_111), BIC(fit_111_012), BIC(ets_fit)), 2)
+)
+
+all_candidates$ΔAIC <- round(all_candidates$AIC - min(all_candidates$AIC), 2)
+all_candidates[order(all_candidates$AIC), ] %>%
+  kable(row.names = FALSE, caption = "AIC Comparison — All Candidates (SARIMA and ETS)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+Among the SARIMA candidates, **SARIMA(1,1,1)(0,1,1)[12]** achieves the lowest AIC. ETS(A,Ad,A) has a substantially higher AIC on the log-transformed scale, already suggesting weaker in-sample fit. Both are carried forward to the forecast evaluation in Section 4, where out-of-sample accuracy on the test set determines the final selection.
+
+---
+
+## 4. Forecast Evaluation
+
+Both finalist models are used to produce forecasts over the held-out test period. All predictions are back-transformed to the original (calendar-adjusted, thousand tonnes) scale before computing accuracy metrics.
+
+### 4.1 Generating Test-Period Forecasts
+
+```{r}
+h <- length(ts_test)
+
+sarima_fc <- forecast(fit_111_011, h = h)
+ets_fc    <- forecast(ets_fit,     h = h)
+
+# Back-transform helper (mirrors the transformation applied in Section 2.8)
+inv_transform <- function(x) {
+  if (!transformed) return(x)
+  if (abs(lambda) < 0.25) return(exp(x))
+  InvBoxCox(x, lambda)
+}
+
+sarima_mean <- inv_transform(as.numeric(sarima_fc$mean))
+sarima_lo80 <- inv_transform(as.numeric(sarima_fc$lower[, 1]))
+sarima_hi80 <- inv_transform(as.numeric(sarima_fc$upper[, 1]))
+sarima_lo95 <- inv_transform(as.numeric(sarima_fc$lower[, 2]))
+sarima_hi95 <- inv_transform(as.numeric(sarima_fc$upper[, 2]))
+
+ets_mean <- inv_transform(as.numeric(ets_fc$mean))
+ets_lo80 <- inv_transform(as.numeric(ets_fc$lower[, 1]))
+ets_hi80 <- inv_transform(as.numeric(ets_fc$upper[, 1]))
+ets_lo95 <- inv_transform(as.numeric(ets_fc$lower[, 2]))
+ets_hi95 <- inv_transform(as.numeric(ets_fc$upper[, 2]))
+```
+
+### 4.2 Visual Comparison
+
+```{r fig.height=5}
+test_times <- as.numeric(time(ts_test))
+
+# Last 3 years of training for visual context
+tail_start  <- time(ts_adj)[max(1, train_size - 35)]
+train_tail  <- window(ts_adj, start = tail_start, end = time(ts_adj)[train_size])
+df_train    <- data.frame(time = as.numeric(time(train_tail)), value = as.numeric(train_tail))
+
+df_test_obs <- data.frame(time = test_times, value = as.numeric(ts_test))
+
+df_sarima <- data.frame(
+  time  = test_times,
+  mean  = sarima_mean, lo80 = sarima_lo80, hi80 = sarima_hi80,
+  lo95  = sarima_lo95, hi95 = sarima_hi95,
+  model = "SARIMA(1,1,1)(0,1,1)[12]"
+)
+
+df_ets <- data.frame(
+  time  = test_times,
+  mean  = ets_mean, lo80 = ets_lo80, hi80 = ets_hi80,
+  lo95  = ets_lo95, hi95 = ets_hi95,
+  model = ets_fit$method
+)
+
+df_fc <- rbind(df_sarima, df_ets)
+
+ggplot() +
+  geom_line(data = df_train,    aes(x = time, y = value), colour = "grey55", linewidth = 0.6) +
+  geom_ribbon(data = df_fc, aes(x = time, ymin = lo95, ymax = hi95, fill = model), alpha = 0.15) +
+  geom_ribbon(data = df_fc, aes(x = time, ymin = lo80, ymax = hi80, fill = model), alpha = 0.20) +
+  geom_line(data = df_fc,   aes(x = time, y = mean, colour = model), linewidth = 0.85) +
+  geom_line(data = df_test_obs, aes(x = time, y = value), colour = "black", linewidth = 0.85) +
+  labs(
+    title  = "Test-Period Forecasts vs Observed Values",
+    subtitle = "Black line = observed; shaded bands = 80% and 95% prediction intervals",
+    x = "Year", y = "Thousand tonnes",
+    colour = "Model", fill = "Model"
+  ) +
+  theme_minimal()
+```
+
+### 4.3 Accuracy Metrics
+
+Point forecast accuracy is evaluated on the original (calendar-adjusted) scale using RMSE, MAE, and MAPE.
+
+```{r}
+sarima_ts_orig <- ts(sarima_mean, start = start(ts_test), frequency = 12)
+ets_ts_orig    <- ts(ets_mean,    start = start(ts_test), frequency = 12)
+
+acc_sarima <- accuracy(sarima_ts_orig, ts_test)
+acc_ets    <- accuracy(ets_ts_orig,    ts_test)
+
+acc_table <- data.frame(
+  Model = c("SARIMA(1,1,1)(0,1,1)[12]", ets_fit$method),
+  RMSE  = round(c(acc_sarima[1, "RMSE"], acc_ets[1, "RMSE"]), 3),
+  MAE   = round(c(acc_sarima[1, "MAE"],  acc_ets[1, "MAE"]),  3),
+  MAPE  = round(c(acc_sarima[1, "MAPE"], acc_ets[1, "MAPE"]), 2)
+)
+
+acc_table[order(acc_table$RMSE), ] %>%
+  kable(row.names = FALSE, caption = "Forecast Accuracy on the Test Set (original scale, thousand tonnes)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r}
+best_idx   <- which.min(acc_table$RMSE)
+best_model <- acc_table$Model[best_idx]
+cat("Best model by RMSE:", best_model, "\n")
+```
+
+**SARIMA(1,1,1)(0,1,1)[12]** outperforms ETS(A,Ad,A) on every metric: RMSE 5.18 vs 9.90, MAE 4.16 vs 8.78, MAPE 8.05% vs 16.83% — roughly half the error in all cases. The gap is explained by a fundamental failure of the ETS model: ETS(A,Ad,A) employs a damped additive trend that, once the damping parameter pulls the trend toward zero, projects production at around 65–70 thousand tonnes — the opposite of what the data shows. The series underwent a persistent, monotonic decline from ~2008 to 2026, and the ETS framework could not extrapolate this structural break over the 94-month test horizon. SARIMA also overestimates the level by approximately 5–10 thousand tonnes on average (the blue forecast line sits above the black observed line throughout), because the decline accelerated after 2019 in a way not fully captured by the training period. Nevertheless, SARIMA correctly tracks the seasonal pattern and direction of change, making it the clear winner. It is selected as the final model.
+
+---
+
+### 4.4 Final Forecast
+
+The winning model is re-fitted to the **full** calendar-adjusted series (`ts_adj`) and used to produce a 24-month-ahead forecast (March 2026 – February 2028).
+
+```{r}
+# Transform the full series with the same lambda used in training
+ts_adj_t <- if (abs(lambda) < 0.25) log(ts_adj) else if (!transformed) ts_adj else BoxCox(ts_adj, lambda)
+
+# Refit SARIMA(1,1,1)(0,1,1)[12] on the full dataset
+final_fit <- Arima(ts_adj_t, order = c(1, 1, 1), seasonal = list(order = c(0, 1, 1), period = 12))
+summary(final_fit)
+```
+
+```{r fig.height=5}
+final_fc <- forecast(final_fit, h = 24)
+
+final_mean <- inv_transform(as.numeric(final_fc$mean))
+final_lo80 <- inv_transform(as.numeric(final_fc$lower[, 1]))
+final_hi80 <- inv_transform(as.numeric(final_fc$upper[, 1]))
+final_lo95 <- inv_transform(as.numeric(final_fc$lower[, 2]))
+final_hi95 <- inv_transform(as.numeric(final_fc$upper[, 2]))
+
+last_time    <- as.numeric(time(ts_adj)[length(ts_adj)])
+future_times <- seq(last_time + 1/12, by = 1/12, length.out = 24)
+
+df_hist   <- data.frame(time = as.numeric(time(ts_adj)), value = as.numeric(ts_adj))
+df_future <- data.frame(
+  time  = future_times,
+  mean  = final_mean,
+  lo80  = final_lo80, hi80 = final_hi80,
+  lo95  = final_lo95, hi95 = final_hi95
+)
+
+ggplot() +
+  geom_line(data = df_hist,   aes(x = time, y = value), colour = "grey45", linewidth = 0.55) +
+  geom_ribbon(data = df_future, aes(x = time, ymin = lo95, ymax = hi95), fill = "steelblue", alpha = 0.18) +
+  geom_ribbon(data = df_future, aes(x = time, ymin = lo80, ymax = hi80), fill = "steelblue", alpha = 0.30) +
+  geom_line(data = df_future,   aes(x = time, y = mean),  colour = "steelblue", linewidth = 1) +
+  labs(
+    title    = "24-Month Ahead Forecast — SARIMA(1,1,1)(0,1,1)[12]",
+    subtitle = "Shaded bands: 80% (darker) and 95% (lighter) prediction intervals",
+    x = "Year", y = "Thousand tonnes"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Tabulate the forecast values
+forecast_months <- seq.Date(as.Date("2026-03-01"), by = "month", length.out = 24)
+
+forecast_table <- data.frame(
+  Month    = format(forecast_months, "%Y-%m"),
+  Forecast = round(final_mean, 2),
+  Lo_80    = round(final_lo80, 2),
+  Hi_80    = round(final_hi80, 2),
+  Lo_95    = round(final_lo95, 2),
+  Hi_95    = round(final_hi95, 2)
+)
+
+forecast_table %>%
+  kable(col.names = c("Month", "Forecast", "Lower 80%", "Upper 80%", "Lower 95%", "Upper 95%"),
+        caption = "24-Month Ahead Point Forecasts and Prediction Intervals (thousand tonnes)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+The 24-month forecast continues the downward trend captured in the full training series, projecting production declining from ~58 thousand tonnes in March 2026 to ~45 thousand tonnes in the summer months, with the expected winter recovery (December 2026: ~52 thousand tonnes, January 2027: ~54). By February 2028 the model projects ~55 thousand tonnes, within the range observed in 2024–2026. The widening prediction intervals reflect increasing uncertainty further into the future, as is typical of SARIMA models, but the 95% bands remain physically plausible given the historical range of the series.

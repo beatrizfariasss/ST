@@ -7,6 +7,8 @@ output: html_notebook
 
 *(to be written)*
 
+---
+
 ## 2. Data and Exploratory Analysis
 
 ### 2.1 Packages
@@ -31,7 +33,7 @@ library(kableExtra)
 ### 2.2 Data Loading and Preparation
 
 ```{r}
-dados <- read.csv("leite.csv")
+dados <- read.csv("data/leite.csv")
 dados
 ```
 
@@ -73,8 +75,8 @@ autoplot(ts_data,
 From the plot we can observe:
 
 1.  **Seasonality:** there is a clear repeating pattern every 12 months, visible throughout the whole series.
-2.  **Trend**: production increases from 1987 until around 2005–2007, reaching a peak of about 90 thousand tonnes, and then steadily decreases to around 40–60 thousand tonnes by 2026.\
-3.  **Variance**: the seasonal swings appear larger in the middle of the series (around 2000–2010) than at the beginning and end, which suggests the variance may not be constant. This will be checked formally using a Box–Cox test.
+2.  **Trend**: production increases from 1987 until around 2005–2007, reaching a peak of about 90 thousand tonnes, and then steadily decreases to around 40–60 thousand tonnes by 2026.
+3.  **Variance**: the seasonal swings appear to be larger in the middle of the series (around 2000–2010) than at the beginning and end, which suggests the variance may not be constant. This will be checked formally using a Box–Cox test.
 
 ### 2.5 Transformation to the month lenght
 
@@ -252,9 +254,9 @@ tsdisplay(ts_stationary,
           lag.max = 48)
 ```
 
-For a seasonal series with s = 12, the relevant lags to examine are **lag 1** (non-seasonal structure) and **lags 12 and 24** (seasonal structure). 
+For a seasonal series with s = 12, the relevant lags to examine are **lag 1** (non-seasonal structure) and **lags 12 and 24** (seasonal structure).
 Non seasonal order:
-By looking at the graphs none show either a strong decay or a cut off, p=1, q=1 
+By looking at the graphs none show either a strong decay or a cut off, p=1, q=1
 Seasonal order:
 In the seasonal lags both show negative significantly spikes in lag 12 which  suggests a seasonal MA(1) model
 
@@ -455,10 +457,188 @@ extended_candidates[order(extended_candidates$AIC), ] %>%
 **SARIMA(1,1,1)(0,1,1)[12]** achieves the lowest AIC across all candidates (ΔAIC = 0). The additional seasonal parameters in SARIMA(1,1,1)(1,1,1)[12] and SARIMA(1,1,1)(0,1,2)[12] are not statistically significant and do not improve either the AIC or the Ljung-Box test, confirming that the extra complexity is not justified. This model is therefore selected as the final SARIMA model.
 
 
-forecast desse modelo foi feito la em cima, sugestao fazer com os dados ate 2015 para ver se  da trend estar toda louca dps desse ano
+### 3.5 Structural Break Diagnostic — Pre-2015 Model
 
+The decomposition revealed a severe structural break starting in 2015, coinciding with the abolition of EU milk quotas. To assess whether the SARIMA model is adequate for the stable pre-break period, we fit the same SARIMA(1,1,1)(0,1,1)[12] on training data restricted to before 2015. If the model performs significantly better on this subset, it confirms that the structural break — not the model specification — is responsible for the residual autocorrelation that persisted across all candidate models.
 
-### 3.6 ETS Model
+```{r}
+ts_train_pre2015 <- window(ts_train_t, end = c(2014, 12))
+
+fit_pre2015 <- Arima(ts_train_pre2015,
+                     order    = c(1, 1, 1),
+                     seasonal = c(0, 1, 1))
+summary(fit_pre2015)
+```
+
+### 
+
+```{r}
+cov2cor(vcov(fit_pre2015))
+```
+
+#### Parameter significance — Pre-2015 model
+
+```{r}
+coeftest(fit_pre2015)
+```
+
+#### Residual diagnostics — Pre-2015 model
+
+```{r}
+checkresiduals(fit_pre2015)
+```
+
+The pre-2015 model yields a marginal improvement in the Ljung-Box test (p = 0.049 vs p = 0.03 for the full series), just crossing the 0.05 threshold. While this provides some evidence that the 2015 structural break contributes to the residual autocorrelation, the improvement is not dramatic. The notable volatility in the residuals during 1988–1992 suggests that data quality in the early years may also be a contributing factor. Nonetheless, the result supports the decision to explicitly model the structural break in Section 3.6.
+
+---
+
+### 3.6 ARIMAX — SARIMA(1,1,1)(0,1,1)[12] with Structural Break Dummy
+
+To model the full series while accounting for the 2015 structural break, we extend SARIMA(1,1,1)(0,1,1)[12] with an exogenous step-change dummy variable (0 before 2015, 1 from January 2015 onwards). This formulation, known as ARIMAX, estimates the permanent level shift caused by the abolition of EU milk quotas as a regression coefficient, allowing the ARIMA errors to remain stationary.
+
+```{r}
+dummy_train <- as.numeric(time(ts_train_t) >= 2015)
+dummy_test  <- as.numeric(time(ts_test_t)  >= 2015)
+
+fit_arimax <- Arima(ts_train_t,
+                    order    = c(1, 1, 1),
+                    seasonal = c(0, 1, 1),
+                    xreg     = dummy_train)
+summary(fit_arimax)
+```
+
+### 
+
+```{r}
+cov2cor(vcov(fit_arimax))
+```
+
+#### Parameter significance — ARIMAX
+
+```{r}
+coeftest(fit_arimax)
+```
+
+#### Residual diagnostics — ARIMAX
+
+```{r}
+checkresiduals(fit_arimax)
+```
+
+#### AIC comparison — SARIMA vs ARIMAX
+
+```{r}
+break_comparison <- data.frame(
+  Model = c("SARIMA(1,1,1)(0,1,1)[12]", "ARIMAX(1,1,1)(0,1,1)[12] + break dummy"),
+  AIC   = round(c(AIC(fit_111_011), AIC(fit_arimax)), 2),
+  AICc  = round(c(AICc(fit_111_011), AICc(fit_arimax)), 2),
+  BIC   = round(c(BIC(fit_111_011), BIC(fit_arimax)), 2)
+)
+break_comparison$ΔAIC <- round(break_comparison$AIC - min(break_comparison$AIC), 2)
+break_comparison %>%
+  kable(row.names = FALSE, caption = "SARIMA vs ARIMAX with Structural Break Dummy") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+#### Forecast — ARIMAX
+
+```{r}
+arimax_forecast <- forecast(fit_arimax,
+                             h    = length(ts_test_t),
+                             xreg = dummy_test)
+
+autoplot(arimax_forecast, include = length(ts_test_t)) +
+  autolayer(ts_test_t, series = "Actual Data") +
+  labs(title = "ARIMAX(1,1,1)(0,1,1)[12] with Structural Break — Forecast vs. Actual",
+       x = "Year", y = "Value (log-transformed)") +
+  guides(colour = guide_legend(title = "Series")) +
+  theme_minimal()
+```
+
+```{r}
+accuracy(arimax_forecast, ts_test_t)
+```
+
+#### Ramp Dummy Variant
+
+To address this limitation, we replace the step dummy with a **ramp variable** that grows linearly from zero after January 2015. Unlike a step dummy, the ramp captures a sustained, continuously changing trend rather than a one-time level shift.
+
+```{r}
+time_idx   <- as.numeric(time(ts_train_t))
+ramp_train <- pmax(0, time_idx - 2015)
+
+time_idx_test <- as.numeric(time(ts_test_t))
+ramp_test     <- pmax(0, time_idx_test - 2015)
+
+fit_arimax_ramp <- Arima(ts_train_t,
+                         order    = c(1, 1, 1),
+                         seasonal = c(0, 1, 1),
+                         xreg     = ramp_train)
+summary(fit_arimax_ramp)
+```
+### 
+
+```{r}
+cov2cor(vcov(fit_arimax))
+```
+
+#### Parameter significance — Ramp ARIMAX
+
+```{r}
+coeftest(fit_arimax_ramp)
+```
+
+#### Residual diagnostics — Ramp ARIMAX
+
+```{r}
+checkresiduals(fit_arimax_ramp)
+```
+
+#### AIC comparison — Step vs Ramp
+
+```{r}
+ramp_comparison <- data.frame(
+  Model = c(
+    "SARIMA(1,1,1)(0,1,1)[12]",
+    "ARIMAX — step dummy",
+    "ARIMAX — ramp dummy"
+  ),
+  AIC  = round(c(AIC(fit_111_011), AIC(fit_arimax), AIC(fit_arimax_ramp)), 2),
+  AICc = round(c(AICc(fit_111_011), AICc(fit_arimax), AICc(fit_arimax_ramp)), 2),
+  BIC  = round(c(BIC(fit_111_011), BIC(fit_arimax), BIC(fit_arimax_ramp)), 2)
+)
+ramp_comparison$ΔAIC <- round(ramp_comparison$AIC - min(ramp_comparison$AIC), 2)
+ramp_comparison %>%
+  kable(row.names = FALSE, caption = "AIC Comparison — SARIMA vs ARIMAX Variants") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+#### Forecast — Ramp ARIMAX
+
+```{r}
+arimax_ramp_forecast <- forecast(fit_arimax_ramp,
+                                  h    = length(ts_test_t),
+                                  xreg = ramp_test)
+
+autoplot(arimax_ramp_forecast, include = length(ts_test_t)) +
+  autolayer(ts_test_t, series = "Actual Data") +
+  labs(title = "ARIMAX(1,1,1)(0,1,1)[12] with Ramp Dummy — Forecast vs. Actual",
+       x = "Year", y = "Value (log-transformed)") +
+  guides(colour = guide_legend(title = "Series")) +
+  theme_minimal()
+```
+
+```{r}
+accuracy(arimax_ramp_forecast, ts_test_t)
+```
+
+The ramp dummy coefficient is not statistically significant (xreg = −0.003, p = 0.930), and the AIC deteriorates relative to both the plain SARIMA and the step dummy ARIMAX. This failure has a structural explanation: the model applies d = 1 and D = 1 differencing to the error process. After one regular difference, a linear ramp reduces to a constant; after one further seasonal difference, that constant is eliminated. The differencing therefore neutralises the ramp's intended effect, leaving it with no explanatory power.
+
+Comparing the three models on the test set, neither ARIMAX variant achieves a Theil's U below 1 — both perform worse than a naïve forecast out-of-sample. The step dummy is preferred on in-sample grounds (lowest AIC, significant coefficient), while the ramp dummy offers a marginally lower test MAPE (1.78% vs 2.62%) despite its insignificant coefficient, an artefact of the declining forecast trajectory rather than genuine model improvement. The fundamental limitation is that the 2015 structural break introduced a persistent change in the trend of the series that ARIMA-based models, which assume stationarity after differencing, cannot fully accommodate. This motivates comparing the ARIMAX against the ETS model in Section 3.7, which adapts its level and trend components dynamically and may handle this structural shift more naturally.
+
+---
+
+### 3.7 ETS Model
 
 
 ```{r}
@@ -466,9 +646,9 @@ ets_fit <- ets(ts_train_t)
 
 summary(ets_fit)
 ```
-```{r}
 
-checkresiduals(ets_fit) # ta uma picha
+```{r}
+checkresiduals(ets_fit)
 ```
 
 
