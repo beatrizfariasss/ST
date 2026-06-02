@@ -113,7 +113,7 @@ Following standard practice, we split the data into a training set (80%) for mod
 
 ```{r}
 n          <- length(ts_adj)
-train_size <- floor(0.80 * n)
+train_size <- floor(0.75 * n)
 
 ts_train <- window(ts_adj, end   = time(ts_adj)[train_size])
 ts_test  <- window(ts_adj, start = time(ts_adj)[train_size + 1])
@@ -275,7 +275,7 @@ We first use `auto.arima()` to search broadly over SARIMA orders and find the be
 Autoarima
 
 ```{r}
-auto_fit <- auto.arima(ts_train_t, stepwise = FALSE, approximation = FALSE,lambda = "auto",seasonal = TRUE)
+auto_fit <- auto.arima(ts_train_t, stepwise = FALSE, approximation = FALSE,seasonal = TRUE)
 summary(auto_fit)
 ```
 
@@ -306,7 +306,7 @@ checkresiduals(auto_fit)
 
 All three parameters are highly significant (p \< 0.001). The residual plot shows values fluctuating around zero with no obvious trend or seasonality. The histogram is approximately bell-shaped, consistent with normality. However, the **Ljung-Box test** returns a p-value of **0.03**, which is below the 0.05 threshold, meaning we reject the null hypothesis of no autocorrelation. Two borderline spikes are present but do not follow a systematic seasonal pattern, suggesting any remaining autocorrelation is weak. This result motivates testing alternative models.
 
-### Forecast Auto Arima
+#### Forecast Auto Arima
 
 ```{r}
 forecast_horizon <- length(ts_test_t)
@@ -321,11 +321,14 @@ autoplot(sarima_forecast, include = forecast_horizon) +
 ```
 
 
+
+
 ```{r}
 accuracy(sarima_forecast, ts_test_t)
 ```
-High values of MPE and MAPE (>1)
+High values of MPE and MAPE (>1) in test, negative values in mpe means is predicting lower than reality
 
+Theils'u >1, does worse than a naive approach 
 
 
 ### 3.2 Manual SARIMA — SARIMA(1,1,1)(1,1,1)[12] 
@@ -357,6 +360,23 @@ checkresiduals(manual_fit)
 ```
 
 Both coefficients are highly significant (p \< 2.2e-16). The residuals fluctuate around zero with no visible trend or seasonal pattern. However, the **Ljung-Box test** returns a significant p-value (p \< 0.05), indicating residual autocorrelation, which means that the model leaves some structure unexplained. The ACF of the residuals shows six spikes exceeding the confidence bands, suggesting that the airline model is not fully capturing the dynamics of the series - it underfits the data, being too simple for the complexity of this series. This motivates exploring models with AR terms in the next section.
+
+#### Forecast 
+```{r}
+forecast_horizon <- length(ts_test_t)
+sarima_manual_forecast <- forecast(manual_fit, h = forecast_horizon)
+
+autoplot(sarima_forecast, include = forecast_horizon) +
+  autolayer(ts_test_t, series = "Actual Data") +
+  labs(title = "ARIMA(1,1,1)(1,1,1)[12] Forecast vs. Actual Data",
+       x = "Year", y = "Production Thousand tonnes") +
+  guides(colour = guide_legend(title = "Series")) +
+  theme_minimal()
+```
+
+```{r}
+accuracy(sarima_manual_forecast, ts_test_t)
+```
 
 ### 3.3 Candidate Models with AR Terms
 
@@ -640,16 +660,72 @@ Comparing the three models on the test set, neither ARIMAX variant achieves a Th
 
 ### 3.7 ETS Model
 
-
+We will try another model, starting with ets auto
 ```{r}
-ets_fit <- ets(ts_train_t)
+ets_fit <- ets(ts_train_t,lambda=0) #making sure it doesn't apply another box cox transformation
 
 summary(ets_fit)
 ```
+Addictive Holt-Winters method 
+
+
 
 ```{r}
 checkresiduals(ets_fit)
 ```
+very bad in the Ljung-Box test, need the diferation
+
+
+```{r}
+forecast_horizon <- length(ts_test_t)
+ets_forecast <- forecast(ets_fit, h = forecast_horizon)
+
+autoplot(ets_forecast, include = forecast_horizon) +
+  autolayer(ts_test_t, series = "Actual Data") +
+  labs(title = "ETS(A,A,A)  Forecast vs. Actual Data",
+       x = "Year", y = "Production Thousand tonnes") +
+  guides(colour = guide_legend(title = "Series")) +
+  theme_minimal()
+
+
+```
+```{r}
+accuracy(ets_forecast, ts_test_t)
+```
+
+
+### 3.8 STLM mix of both (etls and arima)
+
+```{r}
+stlm_arima_fit <- stlm(ts_train_t, s.window = "periodic", method = "arima")
+
+
+checkresiduals(stlm_arima_fit)
+
+# 3. Ver que ordens de ARIMA foram usadas internamente para corrigir a série
+stlm_arima_fit$model
+```
+Still fails the Ljung-Box test but way improved, does worse than sarima
+
+
+```{r}
+forecast_horizon <- length(ts_test_t)
+stlm_forecast <- forecast(stlm_arima_fit, h = forecast_horizon)
+
+autoplot(stlm_forecast, include = forecast_horizon) +
+  autolayer(ts_test_t, series = "Actual Data") +
+  labs(title = "STLM_Arima Forecast vs. Actual Data",
+       x = "Year", y = "Production Thousand tonnes") +
+  guides(colour = guide_legend(title = "Series")) +
+  theme_minimal()
+
+accuracy(stlm_forecast,ts_test_t)
+
+```
+Does worse in forecast 
+
+
+
 
 ### TBATS
 
@@ -668,6 +744,33 @@ accuracy(tbats_forecast, ts_test_t)
 checkresiduals(fit_tbats)
 ```
 
+## Comparision
+```{r}
+criteria <- data.frame(
+  Model = c("SARIMA_auto", "SARIMA_manual", "ETS", "STLM_ARIMA"),
+  AIC = c(AIC(auto_fit), AIC(manual_fit), ets_fit$aic, AIC(stlm_arima_fit$model)),
+  AICc = c(AICc(auto_fit), AICc(manual_fit), ets_fit$aicc, AICc(stlm_arima_fit$model)),
+  BIC = c(BIC(auto_fit), BIC(manual_fit), ets_fit$bic, BIC(stlm_arima_fit$model))
+)
+
+criteria_num <- criteria
+criteria_num[, -1] <- round(criteria[, -1], 2)
+kable(criteria_num, caption = "Comparison of Information Criteria across Models") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+```{r}
+library(knitr)
+
+results <- rbind(
+  SARIMA_auto = accuracy(sarima_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  SARIMA_manual = accuracy(sarima_manual_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  ETS = accuracy(ets_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  STLM_ARIMA = accuracy(stlm_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")]
+)
+kable(round(results, 2), caption = "Forecast Accuracy Comparison on Test Set") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
 
 
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
