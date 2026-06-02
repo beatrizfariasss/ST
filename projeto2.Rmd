@@ -113,7 +113,7 @@ Following standard practice, we split the data into a training set (80%) for mod
 
 ```{r}
 n          <- length(ts_adj)
-train_size <- floor(0.8 * n)
+train_size <- floor(0.80 * n)
 
 ts_train <- window(ts_adj, end   = time(ts_adj)[train_size])
 ts_test  <- window(ts_adj, start = time(ts_adj)[train_size + 1])
@@ -649,6 +649,23 @@ summary(ets_fit)
 
 ```{r}
 checkresiduals(ets_fit)
+```
+
+### TBATS
+
+```{r}
+fit_tbats <- tbats(ts_train_t)
+summary(fit_tbats)
+tbats_forecast <- forecast(fit_tbats, h = length(ts_test_t))
+
+autoplot(tbats_forecast, include = length(ts_test_t)) +
+  autolayer(ts_test_t, series = "Actual Data") +
+  labs(title = "TBATS Forecast vs. Actual Data", x = "Year", y = "Value") +
+  guides(colour = guide_legend(title = "Series")) +
+  theme_minimal()
+
+accuracy(tbats_forecast, ts_test_t)
+checkresiduals(fit_tbats)
 ```
 
 
