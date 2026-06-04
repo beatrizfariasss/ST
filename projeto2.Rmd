@@ -39,8 +39,12 @@ dados
 
 Select the relevant columns and remove the three empty rows at the start (1986, no data reported).
 
+
+
+
 ```{r}
 dadosSelected <- select(dados, TIME_PERIOD, OBS_VALUE)
+
 dadosSelected <- dadosSelected[-c(1,2, 3), ]
 
 # Ensure numeric values (handles any locale comma decimals)
@@ -49,10 +53,14 @@ dadosSelected$OBS_VALUE <- as.numeric(gsub(",", ".", dadosSelected$OBS_VALUE))
 head(dadosSelected)
 ```
 
+
 The dataset contains **`r nrow(dadosSelected)` monthly observations** of drinking milk production in Portugal (thousand tonnes), from January 1987 to February 2026, sourced from Eurostat (APRO_MK_COLM).
 
 ```{r}
 ts_data <- ts(dadosSelected$OBS_VALUE, start = c(1987, 1), frequency = 12)
+```
+```{r}
+ts_after<- window(ts_data, start = c(1992, 1)) #troquei em baixo no plot para se poder vizualizar
 ```
 
 ### 2.3 Outlier Analysis
@@ -66,7 +74,7 @@ The boxplot shows no outliers. All observations fall within the expected range.
 ### 2.4 Time Series Visualisation
 
 ```{r}
-autoplot(ts_data,
+autoplot(ts_after,
          ylab = "Thousand tonnes",
          xlab = "Year",
          main = "Monthly Drinking Milk Production in Portugal (1987-2026)")
@@ -91,10 +99,11 @@ dados_ajustados <- dadosSelected %>%
 
 ```{r}
 ts_adj<- ts(dados_ajustados$Adjusted_value, start = c(1987, 1), frequency = 12)
+ts_adj<-window(ts_adj, start = c(1992, 1)) #se quiseres a serie toda comenta isto
 ```
 
 ```{r}
-autoplot(ts_data, series = "Original") +
+autoplot(ts_after, series = "Original") +
   autolayer(ts_adj , series = "Adjusted") +
   labs(
     x = "Year", 
@@ -275,7 +284,7 @@ We first use `auto.arima()` to search broadly over SARIMA orders and find the be
 Autoarima
 
 ```{r}
-auto_fit <- auto.arima(ts_train_t, stepwise = FALSE, approximation = FALSE,seasonal = TRUE)
+auto_fit <- auto.arima(ts_train_t, stepwise = FALSE, approximation = FALSE)
 summary(auto_fit)
 ```
 
@@ -326,9 +335,9 @@ autoplot(sarima_forecast, include = forecast_horizon) +
 ```{r}
 accuracy(sarima_forecast, ts_test_t)
 ```
-High values of MPE and MAPE (>1) in test, negative values in mpe means is predicting lower than reality
+low values of MPE and MAPE  in test ate 10 é bom , negative values in mpe means is predicting lower than reality
 
-Theils'u >1, does worse than a naive approach 
+ 
 
 
 ### 3.2 Manual SARIMA — SARIMA(1,1,1)(1,1,1)[12] 
@@ -337,7 +346,9 @@ Theils'u >1, does worse than a naive approach
 ```{r}
 manual_fit <- Arima(ts_train_t,
                     order    = c(1, 1, 1),
-                    seasonal = c(1, 1, 1))
+                    seasonal = c(1, 1, 1),
+                    method = "ML"
+                    )
 summary(manual_fit)
 ```
 
