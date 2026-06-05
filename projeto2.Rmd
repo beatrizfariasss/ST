@@ -5,7 +5,11 @@ output: html_notebook
 
 ## 1. Introduction
 
-*(to be written)*
+This study presents a time series analysis of monthly drinking milk production in Portugal, measured in thousand tonnes, covering the period from January 1987 to February 2026. The data were obtained from Eurostat (dataset APRO_MK_COLM) and comprise 470 monthly observations.
+
+Milk production exhibits clear seasonal patterns driven by biological and market cycles, as well as a long-run trend shaped by structural changes in the dairy sector. A particularly notable feature of this series is a sharp and sustained decline beginning around 2015, coinciding with the abolition of EU milk production quotas — a policy change that fundamentally altered production incentives across member states.
+
+The objective of this analysis is to identify and evaluate time series models capable of capturing the seasonality, trend, and structural dynamics present in the data. The methodology proceeds as follows: after exploratory analysis, variance stabilisation, and stationarity testing, a set of SARIMA models is identified and compared. To explicitly account for the 2015 structural break, an ARIMAX extension with a step dummy variable is also considered. Finally, exponential smoothing approaches (ETS and STLM) are fitted as alternatives to the ARIMA family. All models are evaluated on a held-out test set using standard forecast accuracy metrics.
 
 ---
 
@@ -13,7 +17,7 @@ output: html_notebook
 
 ### 2.1 Packages
 
-Necessary packages
+Loading necessary packages
 
 ```{r message=FALSE, warning=FALSE}
 #install.packages(c("readxl","lubridate","dplyr","ggplot2","forecast","tseries","urca","lmtest","MuMIn","kableExtra"))
@@ -28,19 +32,21 @@ library(urca)
 library(lmtest)
 library(MuMIn)
 library(kableExtra)
+library(FinTS)
+library(knitr)
+library(rugarch)
 ```
 
 ### 2.2 Data Loading and Preparation
 
 ```{r}
+
+# Load data
 dados <- read.csv("data/leite.csv")
 dados
 ```
 
-Select the relevant columns and remove the three empty rows at the start (1986, no data reported).
-
-
-
+The first three rows correspond to 1986 and have no recorded value (`OBS_VALUE` is empty). These are removed before proceeding.
 
 ```{r}
 dadosSelected <- select(dados, TIME_PERIOD, OBS_VALUE)
@@ -59,9 +65,7 @@ The dataset contains **`r nrow(dadosSelected)` monthly observations** of drinkin
 ```{r}
 ts_data <- ts(dadosSelected$OBS_VALUE, start = c(1987, 1), frequency = 12)
 ```
-```{r}
-ts_after<- window(ts_data, start = c(1992, 1)) #troquei em baixo no plot para se poder vizualizar
-```
+
 
 ### 2.3 Outlier Analysis
 
@@ -74,7 +78,7 @@ The boxplot shows no outliers. All observations fall within the expected range.
 ### 2.4 Time Series Visualisation
 
 ```{r}
-autoplot(ts_after,
+autoplot(ts_data,
          ylab = "Thousand tonnes",
          xlab = "Year",
          main = "Monthly Drinking Milk Production in Portugal (1987-2026)")
@@ -85,8 +89,9 @@ From the plot we can observe:
 1.  **Seasonality:** there is a clear repeating pattern every 12 months, visible throughout the whole series.
 2.  **Trend**: production increases from 1987 until around 2005–2007, reaching a peak of about 90 thousand tonnes, and then steadily decreases to around 40–60 thousand tonnes by 2026.
 3.  **Variance**: the seasonal swings appear to be larger in the middle of the series (around 2000–2010) than at the beginning and end, which suggests the variance may not be constant. This will be checked formally using a Box–Cox test.
+4.  **Early period (1987–1991)**: the first five years show atypical irregular oscillations not consistent with the rest of the series, which may reflect data quality issues in the early years of reporting. Notably, a spike of 77.70 thousand tonnes in May 1990 stands out as anomalous for this period. While not flagged as a global outlier by the boxplot, it is clearly inconsistent with the surrounding observations. This will be investigated further during model diagnostics.
 
-### 2.5 Transformation to the month lenght
+### 2.5 Transformation to the Month Length
 
 Months have different lengths (28–31 days), which introduces a spurious seasonal effect. We standardise production to an equivalent month of 30.44 days (365.25/12).
 
@@ -98,12 +103,11 @@ dados_ajustados <- dadosSelected %>%
 ```
 
 ```{r}
-ts_adj<- ts(dados_ajustados$Adjusted_value, start = c(1987, 1), frequency = 12)
-ts_adj<-window(ts_adj, start = c(1992, 1)) #se quiseres a serie toda comenta isto
+ts_adj <- ts(dados_ajustados$Adjusted_value, start = c(1987, 1), frequency = 12)
 ```
 
 ```{r}
-autoplot(ts_after, series = "Original") +
+autoplot(ts_data, series = "Original") +
   autolayer(ts_adj , series = "Adjusted") +
   labs(
     x = "Year", 
@@ -118,7 +122,7 @@ The calendar-adjusted series removes the artefact caused by month length differe
 
 ### 2.6 Data Split: Training and Test Sets
 
-Following standard practice, we split the data into a training set (80%) for model fitting and a test set (20%) for forecast evaluation.
+We split the data into a training set (75%) for model fitting and a test set (25%) for forecast evaluation.
 
 ```{r}
 n          <- length(ts_adj)
@@ -143,9 +147,9 @@ autoplot(decomposed) +
 
 The decomposition confirms:
 
--   A clear **seasonal component** with period 12 and constant amplitude throughout the series, which supports the use of an additive decomposition.
--   A **trend component**  reveals a severe structural break starting in 2015, moving from a historic plateau into a sharp, sustained decline. This structural shift, historically driven by the abolition of EU milk quotas in 2015, violates the stationarity assumptions of standard linear ARIMA models.
--   A **remainder** that fluctuates around zero with no obvious pattern, suggesting it is roughly stationary. There is a notable spike around 1989–1990, but no systematic structure is visible.
+-   A **trend component** shows a gradual increase from 1987 to a peak around 2005–2007, followed by a period of relative stability, and then a sharp and sustained decline beginning in 2015. This structural break coincides with the abolition of EU milk production quotas and suggests a permanent change in the level and direction of the series, which may pose challenges for standard ARIMA models and will be further investigated in the modelling phase.
+-   A clear **seasonal component** with period 12, oscillating consistently between approximately −6 and 4.5 throughout the entire series, indicating an additive seasonal pattern.
+-   A **remainder** that fluctuates around zero with no systematic pattern, suggesting the series is well decomposed. A notable spike is visible around 1989–1990, consistent with the atypical oscillations identified in the early period, reinforcing the need to investigate the impact of this period on model fit.
 
 ### 2.8 Variance Stabilisation
 
@@ -185,12 +189,13 @@ Stationarity can be visually assessed by plotting the ACF/PACF
 
 ```{r}
 tsdisplay(ts_train_t,
-          main = paste0("ACF / PACF of the Series box cox transformed "),
+          main = paste0("ACF / PACF of the Series Box Cox Transformed "),
           lag.max = 48)
 ```
 
-By the results: -the sample ACF presents a periodic behavior slowly tending to zero, it is evidence of non-stationarity in seasonality and non stationary trend, which justifies the mathematical necessity of applying a regular difference ($d=1$) and a seasonal difference ($D=1$).
-
+The sample ACF displays a clear periodic structure with significant spikes at lags 12, 24, and 36, alongside a slow decay toward zero, characteristic of a series exhibiting both trend and seasonal non-stationarity. 
+Consequently, the application of one regular difference ($d=1$) and one seasonal difference ($D=1$) is mathematically justified to induce stationarity in the series.
+  
 To confirm we use two complementary tests:
 
 -   **ADF** (Augmented Dickey–Fuller): H₀ = series has a unit root (non-stationary).
@@ -208,7 +213,7 @@ cat("Recommended seasonal differences (nsdiffs):", nsdiffs(ts_train_t), "\n")
 
 Both tests agree that the series is non-stationary:
 
--   **ADF** (p-value = 0.385): fails to reject H₀, indicating the presence of a unit root.
+-   **ADF** (p-value = 0.528): fails to reject H₀, indicating the presence of a unit root.
 -   **KPSS** (p-value \< 0.01): rejects H₀, confirming non-stationarity.
 
 The functions `ndiffs()` and `nsdiffs()` recommend **d = 1** regular difference and **D = 1** seasonal difference to achieve stationarity.
@@ -247,11 +252,8 @@ After applying one seasonal difference (D=1, lag=12) and one regular difference 
 -   **ADF** (p-value \< 0.01): rejects H₀, confirming stationarity.
 -   **KPSS** (p-value \> 0.1): fails to reject H₀, confirming stationarity.
 
-The plot shows the series fluctuating around zero with no visible trend or seasonality. Some larger spikes are visible in the early years (1988–1993), but no systematic pattern remains.
+The plot shows the series fluctuating around zero with no visible trend or seasonality. Some larger spikes are visible in the early years (1988–1991), consistent with the atypical oscillations identified in Section 2.4, but no systematic pattern remains.
 
-```{r}
-ts_stationary
-```
 
 ### 2.11 ACF and PACF Analysis
 
@@ -264,31 +266,27 @@ tsdisplay(ts_stationary,
 ```
 
 For a seasonal series with s = 12, the relevant lags to examine are **lag 1** (non-seasonal structure) and **lags 12 and 24** (seasonal structure).
-Non seasonal order:
-By looking at the graphs none show either a strong decay or a cut off, p=1, q=1
-Seasonal order:
-In the seasonal lags both show negative significantly spikes in lag 12 which  suggests a seasonal MA(1) model
+**Non seasonal order:** Looking at the ACF and PACF graphs, neither shows a strong exponential decay nor a sharp cut-off at lag 1, suggesting p=1 and q=1.
+**Seasonal order:** Both ACF and PACF show a significant negative spike at lag 12 with no significant spike at lag 24. A single spike at the seasonal lag is characteristic of a seasonal MA(1) process, suggesting P = 0 and Q = 1.
 
-`auto.arima()` will also be used in Section 3 to confirm or refine this choice.
+The tentative model is therefore SARIMA(1,1,1)(0,1,1)[12], which will be confirmed by auto.arima() in Section 3.1.
 
 ------------------------------------------------------------------------
 
 ## 3. Model Proposals
 
-All models are fitted on the log-transformed training set (`ts_train_t`). The transformation will be reversed when forecasting in Section 4.
+All models are fitted on the log-transformed training set (ts_train_t). All forecast evaluation metrics are reported on the log-transformed scale.
 
 ### 3.1 Auto ARIMA
 
 We first use `auto.arima()` to search broadly over SARIMA orders and find the best model according to AICc. This serves as a reference to compare against the manually identified model.
-
-Autoarima
 
 ```{r}
 auto_fit <- auto.arima(ts_train_t, stepwise = FALSE, approximation = FALSE)
 summary(auto_fit)
 ```
 
-The selected model is **SARIMA(1,1,1)(0,1,1)[12]**. This is consistent with the ACF/PACF analysis, the presence of spikes at lag 1 in both plots suggested a mixed ARMA(1,1) non-seasonal structure rather than a pure MA(1). All three coefficients are estimated with low standard errors, suggesting they are well-determined by the data. The training MAPE of 0.92% indicates an excellent in-sample fit. **Com o que ta escrito aqui ver em cima**
+The selected model is **SARIMA(1,1,1)(0,1,1)[12]**. This is consistent with the ACF/PACF analysis, the presence of spikes at lag 1 in both plots suggested a mixed ARMA(1,1) non-seasonal structure rather than a pure MA(1). All three coefficients are estimated with low standard errors, suggesting they are well-determined by the data. The training MAPE of 0.94% indicates an excellent in-sample fit.
 
 #### Parameter significance and correlation
 
@@ -301,11 +299,13 @@ print(matriz_correlacao)
 
 The absolute correlation between any two parameters must be less than $0.70$.
 
-The highest correlation observed in the model's correlation matrix was $-0.68$. Since $|-0.68| = 0.68 < 0.70$, the model satisfies this empirical rule. While close to the threshold, this result indicates no strong evidence of overparameterization or redundancy.
+The highest correlation observed in the model's correlation matrix was $-0.67$. Since $|-0.67| = 0.67 < 0.70$, the model satisfies this empirical rule. While close to the threshold, this result indicates no strong evidence of overparameterization or redundancy.
 
 ```{r}
 coeftest(auto_fit)
 ```
+
+All three coefficients are highly significant (p < 0.001), with z-values well above the critical threshold.
 
 #### Residual diagnostics
 
@@ -313,7 +313,61 @@ coeftest(auto_fit)
 checkresiduals(auto_fit)
 ```
 
-All three parameters are highly significant (p \< 0.001). The residual plot shows values fluctuating around zero with no obvious trend or seasonality. The histogram is approximately bell-shaped, consistent with normality. However, the **Ljung-Box test** returns a p-value of **0.03**, which is below the 0.05 threshold, meaning we reject the null hypothesis of no autocorrelation. Two borderline spikes are present but do not follow a systematic seasonal pattern, suggesting any remaining autocorrelation is weak. This result motivates testing alternative models.
+The residual plot shows values fluctuating around zero with no obvious trend or seasonality. The histogram is approximately bell-shaped, consistent with normality. The **Ljung-Box test** returns a p-value of **0.063**, which is above the 0.05 threshold, meaning we fail to reject the null hypothesis of no autocorrelation (the residuals show no significant serial correlation). However, the residuals exhibit elevated volatility during 1987–1991, consistent with the atypical oscillations identified in the exploratory analysis. This motivates two further investigations: whether the conditional variance of the residuals follows an ARCH process, and whether restricting the series to 1992 onwards improves model adequacy.
+
+
+#### Residual diagnostics — ARCH test
+
+```{r}
+res_auto <- residuals(auto_fit)
+
+par(mfrow = c(2,2))
+plot(res_auto, type = "l", main = "SARIMA residuals")
+acf(res_auto,    main = "ACF residuals")
+acf(res_auto^2,  main = "ACF residuals²")
+hist(res_auto, breaks = 30, main = "Distribution")
+```
+
+The residuals fluctuate around zero with no systematic pattern. The ACF of the residuals shows no significant spikes beyond lag 0, consistent with the Ljung-Box result (p = 0.063), indicating that no serial correlation remains. However, the ACF of the squared residuals displays a small number of significant spikes at the early lags, suggesting mild conditional heteroscedasticity.
+
+```{r}
+ArchTest(res_auto, lags = 12)
+```
+
+The ARCH LM test returns Chi-squared = 41.112, df = 12, p-value = 4.693e-05, rejecting H₀ of no ARCH effects. Although less pronounced than typical financial series, significant conditional heteroscedasticity is present in the residuals, justifying the fitting of a GARCH(1,1) model.
+
+#### GARCH(1,1) fit
+
+```{r}
+spec.garch <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+  mean.model     = list(armaOrder = c(0,0), include.mean = FALSE)
+)
+fit.garch <- ugarchfit(spec = spec.garch, data = res_auto)
+show(fit.garch)
+```
+
+The GARCH(1,1) model assumes the conditional variance follows an ARMA(1,1) structure: $$\sigma_t^2 = \omega + \alpha_1 \varepsilon_{t-1}^2 + \beta_1 \sigma_{t-1}^2$$ where $\alpha_1$ captures the impact of past shocks on current variance and $\beta_1$ captures the persistence of past variance. Since the SARIMA residuals have mean $\mu = 0$ by construction, the mean term is excluded from the specification. All three coefficients are statistically significant (p < 0.05). The estimated $\alpha_1 = 0.168$ indicates moderate sensitivity to recent shocks, while $\beta_1 = 0.732$ reflects high persistence in volatility. 
+The sum $\alpha_1 + \beta_1 = 0.900 < 1$ confirms stationarity of the variance process, while its proximity to 1 suggests that volatility shocks dissipate slowly over time.
+  
+#### Standardized residuals diagnostics
+
+```{r}
+std.res_auto <- residuals(fit.garch, standardize = TRUE)
+
+par(mfrow = c(2,2))
+plot(std.res_auto, type = "l", main = "Standardized residuals")
+acf(std.res_auto,    main = "ACF standardized residuals")
+acf(std.res_auto^2,  main = "ACF standardized residuals²")
+hist(std.res_auto, breaks = 30, main = "Distribution")
+```
+
+The standardized residuals fluctuate around zero with no visible pattern, and the histogram is approximately bell-shaped.
+
+```{r}
+ArchTest(std.res_auto, lags = 12)
+```
+The ARCH LM test on the standardized residuals returns p = 0.365 > 0.05 — we fail to reject H₀. The conditional heteroscedasticity has been successfully captured by the GARCH(1,1) model.
 
 #### Forecast Auto Arima
 
@@ -335,49 +389,116 @@ autoplot(sarima_forecast, include = forecast_horizon) +
 ```{r}
 accuracy(sarima_forecast, ts_test_t)
 ```
-low values of MPE and MAPE  in test ate 10 é bom , negative values in mpe means is predicting lower than reality
-
- 
 
 
-### 3.2 Manual SARIMA — SARIMA(1,1,1)(1,1,1)[12] 
+The forecast captures the seasonal pattern and the declining trend reasonably well, with the actual values remaining within the prediction intervals throughout most of the test period. The training MAPE of 0.94% reflects an excellent in-sample fit. However, the test MAPE of 1.76% and a positive MPE of 1.33% indicate a slight tendency to overestimate, as the model fails to fully track the more pronounced decline observed from 2022 onwards. 
+Notably, Theil's U = 1.274 > 1, meaning the model performs worse out-of-sample than a naïve forecast. This limitation is consistent with the presence of the 2015 structural break, which the standard SARIMA cannot fully accommodate, and motivates the investigation of alternative approaches in the following sections.
+
+---
+
+### 3.2 Sample Period Selection — Restricting to 1992
+
+The residual diagnostics of the full-series model revealed elevated volatility during 1987–1991, consistent with the atypical oscillations identified in the exploratory analysis. To assess whether this early period degrades model quality, we fit the same SARIMA model on the series restricted to January 1992 onwards and compare the results.
+
+```{r}
+ts_adj_92     <- window(ts_adj, start = c(1992, 1))
+n_92          <- length(ts_adj_92)
+train_size_92 <- floor(0.75 * n_92)
+
+ts_train_92   <- window(ts_adj_92, end   = time(ts_adj_92)[train_size_92])
+ts_test_92    <- window(ts_adj_92, start = time(ts_adj_92)[train_size_92 + 1])
+
+ts_train_92_t <- log(ts_train_92)
+ts_test_92_t  <- log(ts_test_92)
+
+auto_fit_92 <- auto.arima(ts_train_92_t, stepwise = FALSE, approximation = FALSE)
+summary(auto_fit_92)
+```
+
+```{r}
+checkresiduals(auto_fit_92)
+```
+
+The restricted model yields a substantially improved Ljung-Box test (p = 0.460 vs p = 0.063), comfortably failing to reject H₀ of no autocorrelation. The residuals fluctuate around zero with no visible pattern, all ACF spikes remain within the confidence bands, and the histogram closely follows a normal distribution. The training MAPE improves from 0.94% to 0.80% and the residual variance reduces from 0.00275 to 0.00195, confirming that restricting the series to 1992 removes noise rather than meaningful structure.
+
+```{r}
+sarima_forecast_92 <- forecast(auto_fit_92, h = length(ts_test_92_t))
+accuracy(sarima_forecast_92, ts_test_92_t)
+```
+
+The restricted series yields substantially better in-sample diagnostics — the Ljung-Box test improves from p = 0.063 to p = 0.460 and the residual variance reduces from 0.00275 to 0.00195. However, the out-of-sample performance deteriorates, with the test MAPE increasing from 1.76% to 2.57% and Theil's U from 1.274 to 1.739. 
+Both models struggle in the forecast period due to the 2015 structural break, but the restricted model has less historical data to learn the pre-break dynamics. Given the substantially improved residual diagnostics and the shared limitation of the structural break, the series from 1992 is retained for all subsequent modelling.
+
+```{r}
+lb_full <- Box.test(residuals(auto_fit),    lag = 24, type = "Ljung-Box", fitdf = 3)$p.value
+lb_92   <- Box.test(residuals(auto_fit_92), lag = 24, type = "Ljung-Box", fitdf = 3)$p.value
+
+acc_full <- accuracy(sarima_forecast,    ts_test_t)[2,  "MAPE"]
+acc_92   <- accuracy(sarima_forecast_92, ts_test_92_t)[2, "MAPE"]
+
+period_comparison <- data.frame(
+  Series          = c("Full series (1987–2026)", "Restricted series (1992–2026)"),
+  `Ljung-Box p`   = round(c(lb_full, lb_92), 4),
+  AIC             = round(c(AIC(auto_fit), AIC(auto_fit_92)), 2),
+  `MAPE test (%)`  = round(c(acc_full, acc_92), 3)
+)
+period_comparison %>%
+  kable(row.names = FALSE, caption = "SARIMA(1,1,1)(0,1,1)[12] — Full Series vs. 1992 Onwards") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+**Note:** AIC values are not directly comparable across different sample sizes and are shown for reference only.
+
+```{r}
+ts_adj     <- ts_adj_92
+ts_train   <- ts_train_92
+ts_test    <- ts_test_92
+ts_train_t <- ts_train_92_t
+ts_test_t  <- ts_test_92_t
+```
+
+---
+
+### 3.3 Manual SARIMA — SARIMA(1,1,1)(1,1,1)[12] 
 
 
 ```{r}
 manual_fit <- Arima(ts_train_t,
                     order    = c(1, 1, 1),
                     seasonal = c(1, 1, 1),
-                    method = "ML"
+                    method = "ML" # Maximum Likelihood
                     )
 summary(manual_fit)
 ```
 
-```{r}
-forecast::checkresiduals(manual_fit)
+The model fitted is SARIMA(1,1,1)(1,1,1)[12], consistent with the ACF/PACF analysis in Section 2.11. The training MAPE of 0.80% indicates an excellent in-sample fit.
 
+```{r}
 cov2cor(vcov(manual_fit))
 ```
+The highest correlation in the parameter matrix is between ar1 and ma1 (−0.697), just below the 0.70 threshold. While close, this does not constitute strong evidence of overparameterization.
 
 #### Parameter significance
 
 ```{r}
 coeftest(manual_fit)
 ```
-
+Three of the four parameters are highly significant (p < 0.001). However, the seasonal AR term sar1 is not statistically significant (p = 0.415), with a small estimate of 0.058, suggesting it adds no meaningful information to the model.
+  
 #### Residual diagnostics
 
 ```{r}
 checkresiduals(manual_fit)
 ```
 
-Both coefficients are highly significant (p \< 2.2e-16). The residuals fluctuate around zero with no visible trend or seasonal pattern. However, the **Ljung-Box test** returns a significant p-value (p \< 0.05), indicating residual autocorrelation, which means that the model leaves some structure unexplained. The ACF of the residuals shows six spikes exceeding the confidence bands, suggesting that the airline model is not fully capturing the dynamics of the series - it underfits the data, being too simple for the complexity of this series. This motivates exploring models with AR terms in the next section.
+The residuals fluctuate around zero with no visible pattern, all ACF spikes remain within the confidence bands, and the histogram is approximately normal. The Ljung-Box test returns p = 0.391, comfortably failing to reject H₀. Despite the adequate residual diagnostics, the non-significant `sar1` indicates the model is overparameterized.
 
 #### Forecast 
 ```{r}
 forecast_horizon <- length(ts_test_t)
 sarima_manual_forecast <- forecast(manual_fit, h = forecast_horizon)
 
-autoplot(sarima_forecast, include = forecast_horizon) +
+autoplot(sarima_manual_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
   labs(title = "ARIMA(1,1,1)(1,1,1)[12] Forecast vs. Actual Data",
        x = "Year", y = "Production Thousand tonnes") +
@@ -389,108 +510,13 @@ autoplot(sarima_forecast, include = forecast_horizon) +
 accuracy(sarima_manual_forecast, ts_test_t)
 ```
 
-### 3.3 Candidate Models with AR Terms
-
-To address the residual autocorrelation found in the airline model, we add non-seasonal AR terms. Three candidates are fitted and compared against SARIMA(0,1,1)(0,1,1)[12].
-
-```{r}
-fit_111_011 <- Arima(ts_train_t, order = c(1,1,1), seasonal = c(0,1,1))
-fit_211_011 <- Arima(ts_train_t, order = c(2,1,1), seasonal = c(0,1,1))
-fit_112_011 <- Arima(ts_train_t, order = c(1,1,2), seasonal = c(0,1,1))
-```
-
-#### AIC comparison
-
-```{r}
-ar_candidates <- data.frame(
-  Model = c(
-    "SARIMA(0,1,1)(0,1,1)[12]",
-    "SARIMA(1,1,1)(0,1,1)[12]",
-    "SARIMA(2,1,1)(0,1,1)[12]",
-    "SARIMA(1,1,2)(0,1,1)[12]"
-  ),
-  AIC  = round(c(AIC(manual_fit), AIC(fit_111_011), AIC(fit_211_011), AIC(fit_112_011)), 2),
-  AICc = round(c(AICc(manual_fit), AICc(fit_111_011), AICc(fit_211_011), AICc(fit_112_011)), 2),
-  BIC  = round(c(BIC(manual_fit), BIC(fit_111_011), BIC(fit_211_011), BIC(fit_112_011)), 2)
-)
-
-ar_candidates$ΔAIC <- round(ar_candidates$AIC - min(ar_candidates$AIC), 2)
-ar_candidates[order(ar_candidates$AIC), ] %>%
-  kable(row.names = FALSE, caption = "AIC Comparison — SARIMA Candidates with AR Terms") %>%
-  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
-```
-
-SARIMA(1,1,1)(0,1,1)[12] achieves the lowest AIC among all non-seasonal AR candidates — consistent with the model selected by `auto.arima()` in Section 3.1. However, the Ljung-Box test still returns p = 0.03, motivating two further adjustments in the next section.
-
-### 3.4 Extended Seasonal Candidates
-
-We test two further adjustments targeting the remaining residual autocorrelation: adding a seasonal AR term (P=1) and adding a second seasonal MA term (Q=2).
-
-```{r}
-fit_111_111 <- Arima(ts_train_t, order = c(1,1,1), seasonal = list(order = c(1,1,1), period = 12))
-fit_111_012 <- Arima(ts_train_t, order = c(1,1,1), seasonal = list(order = c(0,1,2), period = 12))
-```
-
-#### Residual diagnostics — SARIMA(1,1,1)(1,1,1)[12]
-
-```{r}
-checkresiduals(fit_111_111)
-```
-
-#### Parameter significance — SARIMA(1,1,1)(1,1,1)[12]
-
-```{r}
-coeftest(fit_111_111)
-```
-
-The residuals fluctuate around zero with no visible trend or seasonal pattern, and the histogram is approximately normal. However, two spikes still exceed the confidence bands in the ACF, and the **Ljung-Box test** returns p = 0.021, meaning that the residual autocorrelation is not resolved. Furthermore, the seasonal AR term `sar1` is not statistically significant (p = 0.947), with an estimate virtually equal to zero, confirming that this parameter adds no meaningful information to the model.
-
-#### Residual diagnostics — SARIMA(1,1,1)(0,1,2)[12]
-
-```{r}
-checkresiduals(fit_111_012)
-```
-
-#### Parameter significance — SARIMA(1,1,1)(0,1,2)[12]
-
-```{r}
-coeftest(fit_111_012)
-```
-
-The residuals fluctuate around zero with no visible trend or seasonal pattern, and the histogram is approximately normal. Again, two spikes still exceed the confidence bands in the ACF, and the **Ljung-Box test** returns p = 0.021 which is identical to the previous candidate. The second seasonal MA term `sma2` is not statistically significant (p = 0.946), with an estimate virtually equal to zero. The additional parameter does not capture any real structure in the data.
-
-#### AIC comparison — extended candidates
-
-```{r}
-extended_candidates <- data.frame(
-  Model = c(
-    "SARIMA(0,1,1)(0,1,1)[12]",
-    "SARIMA(1,1,1)(0,1,1)[12]",
-    "SARIMA(2,1,1)(0,1,1)[12]",
-    "SARIMA(1,1,2)(0,1,1)[12]",
-    "SARIMA(1,1,1)(1,1,1)[12]",
-    "SARIMA(1,1,1)(0,1,2)[12]"
-  ),
-  AIC  = round(c(AIC(manual_fit), AIC(fit_111_011), AIC(fit_211_011), AIC(fit_112_011),
-                 AIC(fit_111_111), AIC(fit_111_012)), 2),
-  AICc = round(c(AICc(manual_fit), AICc(fit_111_011), AICc(fit_211_011), AICc(fit_112_011),
-                 AICc(fit_111_111), AICc(fit_111_012)), 2),
-  BIC  = round(c(BIC(manual_fit), BIC(fit_111_011), BIC(fit_211_011), BIC(fit_112_011),
-                 BIC(fit_111_111), BIC(fit_111_012)), 2)
-)
-
-extended_candidates$ΔAIC <- round(extended_candidates$AIC - min(extended_candidates$AIC), 2)
-extended_candidates[order(extended_candidates$AIC), ] %>%
-  kable(row.names = FALSE, caption = "AIC Comparison — All SARIMA Candidates") %>%
-  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
-```
-
-**SARIMA(1,1,1)(0,1,1)[12]** achieves the lowest AIC across all candidates (ΔAIC = 0). The additional seasonal parameters in SARIMA(1,1,1)(1,1,1)[12] and SARIMA(1,1,1)(0,1,2)[12] are not statistically significant and do not improve either the AIC or the Ljung-Box test, confirming that the extra complexity is not justified. This model is therefore selected as the final SARIMA model.
+The forecast captures the seasonal pattern and declining trend, with actual values remaining within the prediction intervals throughout the test period. The training MAPE of 0.80% reflects an excellent in-sample fit. The test MAPE of 2.34% and positive MPE of 2.14% indicate a tendency to overestimate, consistent with the model failing to track the steeper decline from 2022 onwards. 
+Theil's U = 1.593 > 1 confirms the model performs worse than a naïve forecast out-of-sample, a limitation shared with `auto_fit` and attributable to the 2015 structural break.The non-significant `sar1` parameter confirms the model is overparameterized. The more parsimonious SARIMA(1,1,1)(0,1,1)[12], already identified by `auto.arima()` in Section 3.1, is therefore the preferred specification. 
 
 
-### 3.5 Structural Break Diagnostic — Pre-2015 Model
+### 3.4 Structural Break Diagnostic — Pre-2015 Model
 
-The decomposition revealed a severe structural break starting in 2015, coinciding with the abolition of EU milk quotas. To assess whether the SARIMA model is adequate for the stable pre-break period, we fit the same SARIMA(1,1,1)(0,1,1)[12] on training data restricted to before 2015. If the model performs significantly better on this subset, it confirms that the structural break — not the model specification — is responsible for the residual autocorrelation that persisted across all candidate models.
+Although the SARIMA(1,1,1)(0,1,1)[12] fitted on the series from 1992 passes the Ljung-Box test (p = 0.460), the poor out-of-sample performance (Theil's U > 1) suggests the 2015 structural break continues to challenge the model's predictive ability. To confirm this, we fit the same model on training data restricted to before 2015. If diagnostics improve further, it confirms that the structural break, not the model specification, is the primary remaining limitation.
 
 ```{r}
 ts_train_pre2015 <- window(ts_train_t, end = c(2014, 12))
@@ -501,11 +527,13 @@ fit_pre2015 <- Arima(ts_train_pre2015,
 summary(fit_pre2015)
 ```
 
-### 
+The pre-2015 training set covers the period from January 1992 to December 2014. The training MAPE of 0.79% reflects an excellent in-sample fit.
 
 ```{r}
 cov2cor(vcov(fit_pre2015))
 ```
+
+The highest correlation is between `ar1` and `ma1` (−0.695), just below the 0.70 threshold, indicating no evidence of overparameterization.
 
 #### Parameter significance — Pre-2015 model
 
@@ -513,17 +541,36 @@ cov2cor(vcov(fit_pre2015))
 coeftest(fit_pre2015)
 ```
 
+All three parameters are highly significant (p < 0.001), confirming a well-determined model on the pre-break period.
+
 #### Residual diagnostics — Pre-2015 model
 
 ```{r}
 checkresiduals(fit_pre2015)
 ```
 
-The pre-2015 model yields a marginal improvement in the Ljung-Box test (p = 0.049 vs p = 0.03 for the full series), just crossing the 0.05 threshold. While this provides some evidence that the 2015 structural break contributes to the residual autocorrelation, the improvement is not dramatic. The notable volatility in the residuals during 1988–1992 suggests that data quality in the early years may also be a contributing factor. Nonetheless, the result supports the decision to explicitly model the structural break in Section 3.6.
+```{r}                                                                               
+period_diag <- data.frame(
+  Model  = rep("SARIMA(1,1,1)(0,1,1)[12]", 3),
+  Period = c("Full series (1987–2026)", "From 1992", "Pre-2015 (1992–2014)"),
+  `Ljung-Box p`    = c(0.063, 0.460, 0.532),
+  `Training MAPE`  = c(0.94,  0.80,  0.79),
+  `sigma²`         = c(0.00275, 0.00195, 0.00191),
+  check.names = FALSE
+)
 
+period_diag %>%
+  kable(row.names = FALSE, caption = "SARIMA(1,1,1)(0,1,1)[12] — Diagnostics Across Sample Periods") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+
+The pre-2015 model yields the best diagnostics of the three periods, with Ljung-Box p = 0.532 and the lowest residual variance (sigma² = 0.00191). The consistent improvement across the three periods confirms a clear pattern: the 2015 structural break is the primary remaining challenge for the SARIMA model, motivating its explicit modelling via ARIMAX in Section 3.5.
+          
+          
 ---
 
-### 3.6 ARIMAX — SARIMA(1,1,1)(0,1,1)[12] with Structural Break Dummy
+### 3.5 ARIMAX — SARIMA(1,1,1)(0,1,1)[12] with Structural Break Dummy
 
 To model the full series while accounting for the 2015 structural break, we extend SARIMA(1,1,1)(0,1,1)[12] with an exogenous step-change dummy variable (0 before 2015, 1 from January 2015 onwards). This formulation, known as ARIMAX, estimates the permanent level shift caused by the abolition of EU milk quotas as a regression coefficient, allowing the ARIMA errors to remain stationary.
 
@@ -538,11 +585,13 @@ fit_arimax <- Arima(ts_train_t,
 summary(fit_arimax)
 ```
 
-### 
+The ARIMAX model extends SARIMA(1,1,1)(0,1,1)[12] with a step dummy estimating the level shift caused by the 2015 structural break. The training MAPE of 0.79% reflects an excellent in-sample fit.
 
 ```{r}
 cov2cor(vcov(fit_arimax))
 ```
+
+The highest correlation is between `ar1` and `ma1` (−0.663), well below the 0.70 threshold, indicating no evidence of overparameterization.
 
 #### Parameter significance — ARIMAX
 
@@ -550,20 +599,24 @@ cov2cor(vcov(fit_arimax))
 coeftest(fit_arimax)
 ```
 
+All four parameters are statistically significant. The `xreg` coefficient of −0.077 (p = 0.020) confirms a significant negative level shift from January 2015 onwards, consistent with the decline in production following the abolition of EU milk quotas. The ARIMA parameters remain well-determined with low standard errors.
+
 #### Residual diagnostics — ARIMAX
 
 ```{r}
 checkresiduals(fit_arimax)
 ```
 
+The residuals fluctuate around zero with no visible pattern, and the histogram is approximately normal. The Ljung-Box test returns p = 0.359, comfortably failing to reject H₀ — the residuals show no significant autocorrelation.
+
 #### AIC comparison — SARIMA vs ARIMAX
 
 ```{r}
 break_comparison <- data.frame(
   Model = c("SARIMA(1,1,1)(0,1,1)[12]", "ARIMAX(1,1,1)(0,1,1)[12] + break dummy"),
-  AIC   = round(c(AIC(fit_111_011), AIC(fit_arimax)), 2),
-  AICc  = round(c(AICc(fit_111_011), AICc(fit_arimax)), 2),
-  BIC   = round(c(BIC(fit_111_011), BIC(fit_arimax)), 2)
+  AIC   = round(c(AIC(auto_fit_92), AIC(fit_arimax)), 2),
+  AICc  = round(c(AICc(auto_fit_92), AICc(fit_arimax)), 2),
+  BIC   = round(c(BIC(auto_fit_92), BIC(fit_arimax)), 2)
 )
 break_comparison$ΔAIC <- round(break_comparison$AIC - min(break_comparison$AIC), 2)
 break_comparison %>%
@@ -590,102 +643,28 @@ autoplot(arimax_forecast, include = length(ts_test_t)) +
 accuracy(arimax_forecast, ts_test_t)
 ```
 
-#### Ramp Dummy Variant
+The ARIMAX forecast captures the seasonal pattern and declining trend, with actual values remaining within the prediction intervals throughout the test period. The training MAPE of 0.79% reflects an excellent in-sample fit. The test MAPE of 1.77% represents a modest improvement over the plain SARIMA(1,1,1)(0,1,1)[12] (2.57%), suggesting that explicitly modelling the structural break improves out-of-sample performance. However, Theil's U = 1.238 > 1 indicates the model still performs worse than a naïve forecast, reflecting the ongoing challenge of the post-2015 declining trend.
 
-To address this limitation, we replace the step dummy with a **ramp variable** that grows linearly from zero after January 2015. Unlike a step dummy, the ramp captures a sustained, continuously changing trend rather than a one-time level shift.
-
-```{r}
-time_idx   <- as.numeric(time(ts_train_t))
-ramp_train <- pmax(0, time_idx - 2015)
-
-time_idx_test <- as.numeric(time(ts_test_t))
-ramp_test     <- pmax(0, time_idx_test - 2015)
-
-fit_arimax_ramp <- Arima(ts_train_t,
-                         order    = c(1, 1, 1),
-                         seasonal = c(0, 1, 1),
-                         xreg     = ramp_train)
-summary(fit_arimax_ramp)
-```
-### 
-
-```{r}
-cov2cor(vcov(fit_arimax))
-```
-
-#### Parameter significance — Ramp ARIMAX
-
-```{r}
-coeftest(fit_arimax_ramp)
-```
-
-#### Residual diagnostics — Ramp ARIMAX
-
-```{r}
-checkresiduals(fit_arimax_ramp)
-```
-
-#### AIC comparison — Step vs Ramp
-
-```{r}
-ramp_comparison <- data.frame(
-  Model = c(
-    "SARIMA(1,1,1)(0,1,1)[12]",
-    "ARIMAX — step dummy",
-    "ARIMAX — ramp dummy"
-  ),
-  AIC  = round(c(AIC(fit_111_011), AIC(fit_arimax), AIC(fit_arimax_ramp)), 2),
-  AICc = round(c(AICc(fit_111_011), AICc(fit_arimax), AICc(fit_arimax_ramp)), 2),
-  BIC  = round(c(BIC(fit_111_011), BIC(fit_arimax), BIC(fit_arimax_ramp)), 2)
-)
-ramp_comparison$ΔAIC <- round(ramp_comparison$AIC - min(ramp_comparison$AIC), 2)
-ramp_comparison %>%
-  kable(row.names = FALSE, caption = "AIC Comparison — SARIMA vs ARIMAX Variants") %>%
-  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
-```
-
-#### Forecast — Ramp ARIMAX
-
-```{r}
-arimax_ramp_forecast <- forecast(fit_arimax_ramp,
-                                  h    = length(ts_test_t),
-                                  xreg = ramp_test)
-
-autoplot(arimax_ramp_forecast, include = length(ts_test_t)) +
-  autolayer(ts_test_t, series = "Actual Data") +
-  labs(title = "ARIMAX(1,1,1)(0,1,1)[12] with Ramp Dummy — Forecast vs. Actual",
-       x = "Year", y = "Value (log-transformed)") +
-  guides(colour = guide_legend(title = "Series")) +
-  theme_minimal()
-```
-
-```{r}
-accuracy(arimax_ramp_forecast, ts_test_t)
-```
-
-The ramp dummy coefficient is not statistically significant (xreg = −0.003, p = 0.930), and the AIC deteriorates relative to both the plain SARIMA and the step dummy ARIMAX. This failure has a structural explanation: the model applies d = 1 and D = 1 differencing to the error process. After one regular difference, a linear ramp reduces to a constant; after one further seasonal difference, that constant is eliminated. The differencing therefore neutralises the ramp's intended effect, leaving it with no explanatory power.
-
-Comparing the three models on the test set, neither ARIMAX variant achieves a Theil's U below 1 — both perform worse than a naïve forecast out-of-sample. The step dummy is preferred on in-sample grounds (lowest AIC, significant coefficient), while the ramp dummy offers a marginally lower test MAPE (1.78% vs 2.62%) despite its insignificant coefficient, an artefact of the declining forecast trajectory rather than genuine model improvement. The fundamental limitation is that the 2015 structural break introduced a persistent change in the trend of the series that ARIMA-based models, which assume stationarity after differencing, cannot fully accommodate. This motivates comparing the ARIMAX against the ETS model in Section 3.7, which adapts its level and trend components dynamically and may handle this structural shift more naturally.
+A ramp dummy variant was also tested but discarded, as the differencing structure of the model neutralises the ramp's effect, leaving it with no explanatory power. The fundamental limitation of ARIMA-based models is that they cannot fully accommodate the persistent change in trend introduced by the 2015 structural break, motivating the comparison with alternative approaches in Sections 3.6 and 3.7.
 
 ---
 
-### 3.7 ETS Model
+### 3.6 ETS Model
 
-We will try another model, starting with ets auto
+The ETS family models the series through adaptive smoothing equations for level, trend, and seasonality.
 ```{r}
-ets_fit <- ets(ts_train_t,lambda=0) #making sure it doesn't apply another box cox transformation
+ets_fit <- ets(ts_train_t,lambda=NULL) #making sure it doesn't apply another box cox transformation
 
 summary(ets_fit)
 ```
-Addictive Holt-Winters method 
 
+The automatic selection with lambda=NULL identifies ETS(A,N,A) — additive error, no trend, additive seasonal. The absence of a trend component means the model projects a flat seasonal pattern, unable to capture the continued decline in the series.
 
 
 ```{r}
 checkresiduals(ets_fit)
 ```
-very bad in the Ljung-Box test, need the diferation
-
+The Ljung-Box test returns p = 2.46e-10, strongly rejecting H₀. The residuals show substantial autocorrelation, indicating the ETS model fails to capture all the dynamics of the series.
 
 ```{r}
 forecast_horizon <- length(ts_test_t)
@@ -693,7 +672,7 @@ ets_forecast <- forecast(ets_fit, h = forecast_horizon)
 
 autoplot(ets_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
-  labs(title = "ETS(A,A,A)  Forecast vs. Actual Data",
+  labs(title = "ETS(A,N,A)  Forecast vs. Actual Data",
        x = "Year", y = "Production Thousand tonnes") +
   guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
@@ -704,19 +683,22 @@ autoplot(ets_forecast, include = forecast_horizon) +
 accuracy(ets_forecast, ts_test_t)
 ```
 
+The ETS forecast maintains the seasonal pattern but projects a flat trajectory, failing to track the continued decline in the test period. The test MAPE of 2.07% and Theil's U = 1.524 > 1 confirm the model performs worse than a naïve forecast.
 
-### 3.8 STLM mix of both (etls and arima)
+### 3.7 STLM-ARIMA Model
 
 ```{r}
 stlm_arima_fit <- stlm(ts_train_t, s.window = "periodic", method = "arima")
-
-
-checkresiduals(stlm_arima_fit)
-
-# 3. Ver que ordens de ARIMA foram usadas internamente para corrigir a série
 stlm_arima_fit$model
 ```
-Still fails the Ljung-Box test but way improved, does worse than sarima
+
+The STLM model decomposes the series using STL (Seasonal and Trend decomposition using Loess), then fits an ARIMA model to the seasonally adjusted component. The internal ARIMA selection identifies ARIMA(1,1,1) for the trend-cycle component.
+
+```{r}
+checkresiduals(stlm_arima_fit)
+```
+
+The **Ljung-Box test** returns p = 0.016, marginally rejecting H₀ — some residual autocorrelation remains, though substantially less than in the ETS model. 
 
 
 ```{r}
@@ -725,67 +707,49 @@ stlm_forecast <- forecast(stlm_arima_fit, h = forecast_horizon)
 
 autoplot(stlm_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
-  labs(title = "STLM_Arima Forecast vs. Actual Data",
+  labs(title = "STLM-ARIMA Forecast vs. Actual Data",
        x = "Year", y = "Production Thousand tonnes") +
   guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
-
-accuracy(stlm_forecast,ts_test_t)
-
 ```
-Does worse in forecast 
-
-
-
-
-### TBATS
 
 ```{r}
-fit_tbats <- tbats(ts_train_t)
-summary(fit_tbats)
-tbats_forecast <- forecast(fit_tbats, h = length(ts_test_t))
-
-autoplot(tbats_forecast, include = length(ts_test_t)) +
-  autolayer(ts_test_t, series = "Actual Data") +
-  labs(title = "TBATS Forecast vs. Actual Data", x = "Year", y = "Value") +
-  guides(colour = guide_legend(title = "Series")) +
-  theme_minimal()
-
-accuracy(tbats_forecast, ts_test_t)
-checkresiduals(fit_tbats)
+accuracy(stlm_forecast,ts_test_t)
 ```
 
-## Comparision
+The STLM forecast achieves a training MAPE of 0.79% and a test MAPE of 2.13%, comparable to the ETS model. Theil's U = 1.574 > 1 indicates the model performs worse than a naïve forecast out-of-sample.
+
+
+## 4. Model Comparison
+
 ```{r}
 criteria <- data.frame(
-  Model = c("SARIMA_auto", "SARIMA_manual", "ETS", "STLM_ARIMA"),
-  AIC = c(AIC(auto_fit), AIC(manual_fit), ets_fit$aic, AIC(stlm_arima_fit$model)),
-  AICc = c(AICc(auto_fit), AICc(manual_fit), ets_fit$aicc, AICc(stlm_arima_fit$model)),
-  BIC = c(BIC(auto_fit), BIC(manual_fit), ets_fit$bic, BIC(stlm_arima_fit$model))
+  Model = c("SARIMA(1,1,1)(0,1,1)[12]", "SARIMA(1,1,1)(1,1,1)[12]",
+            "ARIMAX + break dummy"),
+  AIC  = c(AIC(auto_fit_92), AIC(manual_fit), AIC(fit_arimax)),
+  AICc = c(AICc(auto_fit_92), AICc(manual_fit), AICc(fit_arimax)),
+  BIC  = c(BIC(auto_fit_92), BIC(manual_fit), BIC(fit_arimax))
 )
-
-criteria_num <- criteria
-criteria_num[, -1] <- round(criteria[, -1], 2)
-kable(criteria_num, caption = "Comparison of Information Criteria across Models") %>%
-  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
-```
-
-```{r}
-library(knitr)
-
-results <- rbind(
-  SARIMA_auto = accuracy(sarima_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
-  SARIMA_manual = accuracy(sarima_manual_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
-  ETS = accuracy(ets_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
-  STLM_ARIMA = accuracy(stlm_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")]
-)
-kable(round(results, 2), caption = "Forecast Accuracy Comparison on Test Set") %>%
+criteria$ΔAIC <- round(criteria$AIC - min(criteria$AIC), 2)
+criteria[, -1] <- round(criteria[, -1], 2)
+kable(criteria, row.names = FALSE, caption = "Comparison of Information Criteria across Models") %>%
   kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
 ```
 
+The STLM-ARIMA model is excluded from this comparison as its AIC is computed on the seasonally adjusted series (after STL decomposition), omitting the seasonal component parameters, and is therefore not directly comparable to the SARIMA and ARIMAX models.
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r}
+results <- rbind(
+  `SARIMA(1,1,1)(0,1,1)[12]`  = accuracy(sarima_forecast_92,    ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `SARIMA(1,1,1)(1,1,1)[12]`  = accuracy(sarima_manual_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `ARIMAX + break dummy`       = accuracy(arimax_forecast,        ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `ETS(A,N,A)`                 = accuracy(ets_forecast,           ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `STLM-ARIMA`                 = accuracy(stlm_forecast,          ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")]
+)
+kable(round(results, 3), caption = "Forecast Accuracy Comparison on Test Set") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+ARIMAX with structural break dummy achieves the best out-of-sample performance across all metrics, with a test MAPE of 1.77% and Theil's U = 1.239. The explicit modelling of the 2015 level shift provides a substantial improvement over the plain SARIMA models. ETS and STLM perform comparably in the middle range (MAPE ≈ 2.1%), while the SARIMA models without structural break modelling perform worst. However, all models yield Theil's U > 1, indicating that none outperforms a naïve forecast, which is a consequence of the persistent structural change in the series that no model fully accommodates.
+

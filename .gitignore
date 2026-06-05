@@ -5,7 +5,6 @@
 *.Rproj
 
 # Notebook output
-*.nb.html
 *_cache/
 *_files/
 
