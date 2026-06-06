@@ -378,7 +378,7 @@ sarima_forecast <- forecast(auto_fit, h = forecast_horizon)
 autoplot(sarima_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
   labs(title = "(Auto.Arima) ARIMA(1,1,1)(0,1,1)[12] Forecast vs. Actual Data",
-       x = "Year", y = "Production Thousand tonnes") +
+       x = "Year", y = "Log(Production)") +
   guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
 ```
@@ -414,6 +414,7 @@ ts_test_92_t  <- log(ts_test_92)
 auto_fit_92 <- auto.arima(ts_train_92_t, stepwise = FALSE, approximation = FALSE)
 summary(auto_fit_92)
 ```
+
 
 ```{r}
 checkresiduals(auto_fit_92)
@@ -501,7 +502,7 @@ sarima_manual_forecast <- forecast(manual_fit, h = forecast_horizon)
 autoplot(sarima_manual_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
   labs(title = "ARIMA(1,1,1)(1,1,1)[12] Forecast vs. Actual Data",
-       x = "Year", y = "Production Thousand tonnes") +
+       x = "Year", y = "Log Production") +
   guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
 ```
@@ -673,7 +674,7 @@ ets_forecast <- forecast(ets_fit, h = forecast_horizon)
 autoplot(ets_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
   labs(title = "ETS(A,N,A)  Forecast vs. Actual Data",
-       x = "Year", y = "Production Thousand tonnes") +
+       x = "Year", y = "Log (Production)") +
   guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
 
@@ -708,7 +709,7 @@ stlm_forecast <- forecast(stlm_arima_fit, h = forecast_horizon)
 autoplot(stlm_forecast, include = forecast_horizon) +
   autolayer(ts_test_t, series = "Actual Data") +
   labs(title = "STLM-ARIMA Forecast vs. Actual Data",
-       x = "Year", y = "Production Thousand tonnes") +
+       x = "Year", y = "Log Production") +
   guides(colour = guide_legend(title = "Series")) +
   theme_minimal()
 ```
@@ -741,7 +742,7 @@ The STLM-ARIMA model is excluded from this comparison as its AIC is computed on 
 
 ```{r}
 results <- rbind(
-  `SARIMA(1,1,1)(0,1,1)[12]`  = accuracy(sarima_forecast_92,    ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `SARIMA(1,1,1)(0,1,1)[12]`  = accuracy(sarima_forecast_real,  ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
   `SARIMA(1,1,1)(1,1,1)[12]`  = accuracy(sarima_manual_forecast, ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
   `ARIMAX + break dummy`       = accuracy(arimax_forecast,        ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
   `ETS(A,N,A)`                 = accuracy(ets_forecast,           ts_test_t)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
@@ -751,5 +752,58 @@ kable(round(results, 3), caption = "Forecast Accuracy Comparison on Test Set") %
   kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
 ```
 
+
 ARIMAX with structural break dummy achieves the best out-of-sample performance across all metrics, with a test MAPE of 1.77% and Theil's U = 1.239. The explicit modelling of the 2015 level shift provides a substantial improvement over the plain SARIMA models. ETS and STLM perform comparably in the middle range (MAPE ≈ 2.1%), while the SARIMA models without structural break modelling perform worst. However, all models yield Theil's U > 1, indicating that none outperforms a naïve forecast, which is a consequence of the persistent structural change in the series that no model fully accommodates.
+
+
+
+
+Results checked for the original scale 
+
+```{r}
+
+sarima_auto_fc_real <-forecast(auto_fit_92, h = forecast_horizon, 
+                                          lambda = 0, biasadj = TRUE)
+
+sarima_manual_fc_real <-forecast(manual_fit, h = forecast_horizon, 
+                                            lambda = 0, biasadj = TRUE)
+
+arimax_fc_real <-forecast(fit_arimax, h = forecast_horizon, 
+                                     xreg = dummy_test, lambda = 0, biasadj = TRUE)
+
+
+ets_fc_real <-forecast(ets_fit, h = forecast_horizon, 
+                                  lambda = 0, biasadj = TRUE)
+
+stlm_fc_real <- forecast(stlm_arima_fit, h = forecast_horizon, 
+                                   lambda = 0, biasadj = TRUE)
+```
+
+
+```{r}
+ts_test_real <- exp(ts_test_t)
+
+results_original_scale <- rbind(
+  `SARIMA(1,1,1)(0,1,1)[12]` = accuracy(sarima_auto_fc_real,ts_test_real)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `SARIMA(1,1,1)(1,1,1)[12]` = accuracy(sarima_manual_fc_real, ts_test_real)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `ARIMAX + break dummy`     = accuracy(arimax_fc_real,ts_test_real)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `ETS(A,N,A)`                 = accuracy(ets_fc_real,ts_test_real)[2, c("RMSE", "MAE", "MAPE", "Theil's U")],
+  `STLM-ARIMA`                 = accuracy(stlm_fc_real,ts_test_real)[2, c("RMSE", "MAE", "MAPE", "Theil's U")]
+)
+
+print(results_original_scale)
+```
+
+```{r}
+autoplot(ts_test, series = "Actual",linewidth = 1) +
+  autolayer(sarima_auto_fc_real$mean, series = "SARIMA Auto", PI = FALSE) +
+  autolayer(sarima_manual_fc_real$mean, series = "SARIMA Manual", PI = FALSE) +
+  autolayer(arimax_fc_real$mean, series = "ARIMAX", PI = FALSE) +
+  autolayer(ets_fc_real$mean, series = "ETS", PI = FALSE) +
+  autolayer(stlm_fc_real$mean, series = "STLM+ARIMA", PI = FALSE)+
+  labs(title = "Model Forecasts vs Actual Data", y= "Thousand tonnes", x = "Time") +
+  guides(colour = guide_legend(title = "Forecasts")) +
+  theme_minimal()
+```
+
 
